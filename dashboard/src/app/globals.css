@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@theme {
+  /* Equity Sovereign Design System — "The Precision Curator" */
+
+  /* Primary */
+  --color-primary: #4f6073;
+  --color-primary-dim: #435467;
+  --color-primary-container: #d2e4fb;
+  --color-on-primary: #f5f8ff;
+  --color-on-primary-container: #425366;
+
+  /* Secondary */
+  --color-secondary: #5c5f64;
+  --color-secondary-container: #e0e2e8;
+
+  /* Tertiary */
+  --color-tertiary: #585e78;
+  --color-tertiary-container: #d6dbfb;
+
+  /* Error */
+  --color-error: #9f403d;
+  --color-error-container: #fe8983;
+  --color-on-error: #fff7f6;
+
+  /* Surface */
+  --color-surface: #f9f9f9;
+  --color-surface-dim: #d4dbdd;
+  --color-surface-bright: #f9f9f9;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f2f4f4;
+  --color-surface-container: #ebeeef;
+  --color-surface-container-high: #e4e9ea;
+  --color-surface-container-highest: #dde4e5;
+  --color-surface-variant: #dde4e5;
+
+  /* On Surface */
+  --color-on-surface: #2d3435;
+  --color-on-surface-variant: #5a6061;
+  --color-on-background: #2d3435;
+
+  /* Outline */
+  --color-outline: #757c7d;
+  --color-outline-variant: #adb3b4;
+
+  /* Inverse */
+  --color-inverse-surface: #0c0f0f;
+  --color-inverse-on-surface: #9c9d9d;
+
+  /* Semantic */
+  --color-success: #00A650;
+  --color-info: #1E88E5;
+
+  /* Fonts */
+  --font-headline: "Manrope", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-label: "Space Grotesk", monospace;
+
+  /* Border Radius */
+  --radius-sm: 0.125rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.5rem;
+  --radius-full: 0.75rem;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-body);
+    color: var(--color-on-surface);
+    background: var(--color-surface);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--color-primary-container);
+  }
+
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--color-surface-container-high); border-radius: 10px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-outline-variant); }
+}
+
+@keyframes pulse-heat {
+  0% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+  100% { opacity: 0.3; }
+}

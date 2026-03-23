@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["src/index.js"],
+      "port": 2001
+    },
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/next/dist/bin/next", "dev", "--port", "2000"],
+      "cwd": "dashboard",
+      "port": 2000,
+      "autoPort": false
+    },
+    {
+      "name": "python-llm",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "2002", "--reload"],
+      "cwd": "python-llm",
+      "port": 2002
+    }
+  ]
+}

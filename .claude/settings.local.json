@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/COIN -type f -name *.sql)",
+      "Bash(find /c/COIN -type f -name *.py -o -name *.js -o -name *.ts -o -name *.jsx)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //PID 195764 //F)",
+      "Bash(ls C:/COIN/dashboard/node_modules/.bin/next*)",
+      "Bash(node src/tools/resnapshot.js)",
+      "Bash(node src/index.js)",
+      "Bash(taskkill //PID 117292 //F)",
+      "Bash(node -e \"const lc = require\\(''lightweight-charts''\\); console.log\\(Object.keys\\(lc\\).filter\\(k => k.includes\\(''Line''\\) || k.includes\\(''Series''\\)\\)\\)\")"
+    ]
+  }
+}

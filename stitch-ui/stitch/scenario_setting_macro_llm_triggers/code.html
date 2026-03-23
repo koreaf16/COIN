@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Scenario Setting | Equity Sovereign</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&amp;family=Inter:wght@300;400;500;600&amp;family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "tertiary-fixed": "#d6dbfb",
+                        "on-secondary-fixed-variant": "#595c61",
+                        "secondary-fixed": "#e0e2e8",
+                        "primary-dim": "#435467",
+                        "primary-container": "#d2e4fb",
+                        "secondary-dim": "#505358",
+                        "on-primary-fixed": "#304153",
+                        "background": "#f9f9f9",
+                        "surface-tint": "#4f6073",
+                        "surface-bright": "#f9f9f9",
+                        "secondary-fixed-dim": "#d2d4da",
+                        "on-secondary-fixed": "#3c4044",
+                        "on-tertiary": "#faf8ff",
+                        "outline-variant": "#adb3b4",
+                        "on-surface": "#2d3435",
+                        "on-background": "#2d3435",
+                        "tertiary-container": "#d6dbfb",
+                        "primary-fixed": "#d2e4fb",
+                        "surface-container-high": "#e4e9ea",
+                        "outline": "#757c7d",
+                        "error-dim": "#4e0309",
+                        "surface-container-lowest": "#ffffff",
+                        "error-container": "#fe8983",
+                        "on-error": "#fff7f6",
+                        "on-secondary-container": "#4f5257",
+                        "on-primary": "#f5f8ff",
+                        "on-error-container": "#752121",
+                        "surface-container": "#ebeeef",
+                        "secondary": "#5c5f64",
+                        "on-tertiary-container": "#474d67",
+                        "on-primary-container": "#425366",
+                        "surface-variant": "#dde4e5",
+                        "primary": "#4f6073",
+                        "inverse-on-surface": "#9c9d9d",
+                        "on-surface-variant": "#5a6061",
+                        "tertiary-dim": "#4c526c",
+                        "error": "#9f403d",
+                        "on-secondary": "#f7f9ff",
+                        "surface-dim": "#d4dbdd",
+                        "inverse-surface": "#0c0f0f",
+                        "tertiary-fixed-dim": "#c8cdec",
+                        "surface-container-low": "#f2f4f4",
+                        "surface-container-highest": "#dde4e5",
+                        "secondary-container": "#e0e2e8",
+                        "on-primary-fixed-variant": "#4c5d70",
+                        "inverse-primary": "#d5e7fe",
+                        "surface": "#f9f9f9",
+                        "on-tertiary-fixed-variant": "#515771",
+                        "primary-fixed-dim": "#c4d6ed",
+                        "tertiary": "#585e78",
+                        "on-tertiary-fixed": "#353b53"
+                    },
+                    fontFamily: {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Space Grotesk"]
+                    },
+                    borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #f9f9f9; color: #2d3435; }
+        .font-headline { font-family: 'Manrope', sans-serif; }
+        .font-label { font-family: 'Space Grotesk', sans-serif; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; display: inline-block; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #dde4e5; border-radius: 10px; }
+    </style>
+</head>
+<body class="flex min-h-screen overflow-hidden">
+<!-- SideNavBar -->
+<aside class="hidden md:flex flex-col h-screen w-64 border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 py-6 shrink-0">
+<div class="px-6 mb-8">
+<h1 class="text-lg font-black text-slate-900 dark:text-white font-headline">EQUITY SOVEREIGN</h1>
+<p class="font-label text-[10px] uppercase tracking-widest text-on-surface-variant opacity-70">Institutional Access</p>
+</div>
+<nav class="flex-1 space-y-1">
+<div class="px-6 mb-2">
+<span class="font-label text-xs uppercase tracking-widest text-slate-500">Core Functions</span>
+</div>
+<a class="flex items-center gap-3 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 px-6 py-3 transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="font-body text-sm font-medium">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 px-6 py-3 transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="query_stats">query_stats</span>
+<span class="font-body text-sm font-medium">Market Analysis</span>
+</a>
+<a class="flex items-center gap-3 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-bold rounded-sm shadow-sm translate-x-1 px-6 py-3 transition-transform" href="#">
+<span class="material-symbols-outlined" data-icon="analytics">analytics</span>
+<span class="font-body text-sm font-medium">Scenario Setting</span>
+</a>
+<a class="flex items-center gap-3 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 px-6 py-3 transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="history">history</span>
+<span class="font-body text-sm font-medium">Backtesting</span>
+</a>
+<a class="flex items-center gap-3 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 px-6 py-3 transition-colors" href="#">
+<span class="material-symbols-outlined" data-icon="account_balance_wallet">account_balance_wallet</span>
+<span class="font-body text-sm font-medium">Positions</span>
+</a>
+</nav>
+<div class="mt-auto px-4">
+<button class="w-full bg-primary text-on-primary py-2.5 rounded-lg font-body font-semibold text-sm hover:bg-primary-dim transition-all active:scale-[0.98]">
+                New Trade
+            </button>
+<div class="mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
+<a class="flex items-center gap-3 text-slate-500 hover:text-slate-900 px-2 py-2 text-sm" href="#">
+<span class="material-symbols-outlined" data-icon="help_outline">help_outline</span>
+<span>Support</span>
+</a>
+<a class="flex items-center gap-3 text-slate-500 hover:text-slate-900 px-2 py-2 text-sm" href="#">
+<span class="material-symbols-outlined" data-icon="terminal">terminal</span>
+<span>Logs</span>
+</a>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+<!-- TopAppBar -->
+<header class="flex justify-between items-center w-full px-6 py-3 h-16 bg-white dark:bg-slate-950 border-b border-slate-100 shrink-0">
+<div class="flex items-center gap-8">
+<span class="md:hidden text-xl font-bold tracking-tighter text-slate-900 dark:text-white uppercase font-headline">ES</span>
+<nav class="hidden md:flex items-center gap-6">
+<a class="text-slate-500 dark:text-slate-400 font-medium hover:text-slate-700 dark:hover:text-slate-200 transition-colors font-label tracking-tight text-xs uppercase" href="#">Terminal</a>
+<a class="text-slate-500 dark:text-slate-400 font-medium hover:text-slate-700 dark:hover:text-slate-200 transition-colors font-label tracking-tight text-xs uppercase" href="#">Portfolio</a>
+<a class="text-slate-500 dark:text-slate-400 font-medium hover:text-slate-700 dark:hover:text-slate-200 transition-colors font-label tracking-tight text-xs uppercase" href="#">Advisory</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative hidden sm:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" data-icon="search">search</span>
+<input class="pl-10 pr-4 py-1.5 bg-slate-100 border-none rounded-lg text-xs font-body w-64 focus:ring-1 focus:ring-primary" placeholder="Global Search..." type="text"/>
+</div>
+<button class="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-all">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<button class="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-all">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<img alt="User Profile" class="w-8 h-8 rounded-full border border-slate-200" data-alt="Corporate professional headshot for user profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC_JG1hNxRPnGP8HI9MFDPzjvSC-XZim1MpnC_cOfuM1eEanJQs8qhSgc3lMKZ1EF6xcm_IetdmbjGX4Udbf5IEsHnWYJrplCusJFIHrfOt4qDX7m1wLVbPza7hK3Ayy49U-j9ZNr-EAWADyYaRP3p-A53mWQEMqkTAXCjwMgGipn1z-xVgv4P0F9HgYV6-8PdieEgUX3w_F5UklheBX7-U0k9TvqkhrrJYD2pFd4UKRwuY2ZFdXNdPFQaMqDMN_qmAESIy4b4BX98d"/>
+</div>
+</header>
+<!-- Scrollable Canvas -->
+<section class="flex-1 overflow-y-auto p-6 space-y-6">
+<!-- Headline Row -->
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-4">
+<div>
+<h2 class="text-3xl font-extrabold font-headline tracking-tight text-slate-900">Scenario Setting</h2>
+<p class="text-on-surface-variant font-body mt-1">Configure automated LLM-driven execution based on macroeconomic volatility triggers.</p>
+</div>
+<div class="flex gap-2">
+<button class="px-4 py-2 border border-outline-variant text-primary font-body text-xs font-semibold rounded-lg hover:bg-surface-container transition-all">Save Draft</button>
+<button class="px-4 py-2 bg-primary text-on-primary font-body text-xs font-semibold rounded-lg hover:bg-primary-dim shadow-sm flex items-center gap-2 transition-all">
+<span class="material-symbols-outlined text-sm" data-icon="bolt">bolt</span>
+                        Activate Scenarios
+                    </button>
+</div>
+</div>
+<!-- Main Bento Grid -->
+<div class="grid grid-cols-12 gap-6">
+<!-- Left: Logic Configuration (LLM Triggers) -->
+<div class="col-span-12 lg:col-span-8 space-y-6">
+<!-- If/Then Logic Module -->
+<div class="bg-surface-container-lowest rounded-xl p-6 border border-transparent shadow-sm">
+<div class="flex items-center justify-between mb-6">
+<h3 class="font-headline font-bold text-slate-800 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="auto_awesome">auto_awesome</span>
+                                Macro Logic Triggers
+                            </h3>
+<span class="font-label text-[10px] bg-primary-container text-on-primary-container px-2 py-0.5 rounded-full font-bold">GPT-4o ENHANCED</span>
+</div>
+<div class="space-y-4">
+<!-- Logic Row 1 -->
+<div class="flex flex-col md:flex-row items-center gap-4 bg-surface p-4 rounded-lg border-l-4 border-primary">
+<span class="font-label text-xs font-bold text-slate-400 shrink-0">IF EVENT</span>
+<select class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-48 focus:ring-1 focus:ring-primary focus:border-primary">
+<option>CPI Report (YOY)</option>
+<option>FOMC Rate Decision</option>
+<option>Non-Farm Payrolls</option>
+</select>
+<select class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-24 focus:ring-1 focus:ring-primary focus:border-primary">
+<option>&lt;</option>
+<option>&gt;</option>
+<option>=</option>
+</select>
+<input class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-24 focus:ring-1 focus:ring-primary focus:border-primary" type="text" value="2.6%"/>
+<span class="font-label text-xs font-bold text-slate-400 shrink-0">THEN ACTION</span>
+<select class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-48 focus:ring-1 focus:ring-primary focus:border-primary">
+<option>Buy $ES_F (Long)</option>
+<option>Sell $ES_F (Short)</option>
+<option>Hedge Delta 0.5</option>
+</select>
+<button class="p-2 text-error hover:bg-error-container/10 rounded-lg">
+<span class="material-symbols-outlined" data-icon="delete">delete</span>
+</button>
+</div>
+<!-- Logic Row 2 -->
+<div class="flex flex-col md:flex-row items-center gap-4 bg-surface p-4 rounded-lg border-l-4 border-outline-variant opacity-80">
+<span class="font-label text-xs font-bold text-slate-400 shrink-0">IF EVENT</span>
+<select class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-48 focus:ring-1 focus:ring-primary focus:border-primary">
+<option>FOMC Rate Decision</option>
+<option>CPI Report (YOY)</option>
+</select>
+<select class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-24 focus:ring-1 focus:ring-primary focus:border-primary">
+<option>is</option>
+<option>not</option>
+</select>
+<input class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-24 focus:ring-1 focus:ring-primary focus:border-primary" type="text" value="PAUSE"/>
+<span class="font-label text-xs font-bold text-slate-400 shrink-0">THEN ACTION</span>
+<select class="bg-white border border-outline-variant text-sm font-body px-3 py-2 rounded-lg w-full md:w-48 focus:ring-1 focus:ring-primary focus:border-primary">
+<option>Sell Volatility ($VIX)</option>
+<option>Long Duration Bonds</option>
+</select>
+<button class="p-2 text-error hover:bg-error-container/10 rounded-lg">
+<span class="material-symbols-outlined" data-icon="delete">delete</span>
+</button>
+</div>
+<button class="w-full py-3 border-2 border-dashed border-outline-variant rounded-lg text-slate-400 text-xs font-label uppercase tracking-widest hover:border-primary hover:text-primary transition-all">
+                                + Add Macro Logic Branch
+                            </button>
+</div>
+</div>
+<!-- Risk & Probability Sliders -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+<div class="bg-surface-container-lowest rounded-xl p-6 shadow-sm">
+<h4 class="font-headline font-bold text-slate-800 text-sm mb-4 uppercase tracking-tighter">Scenario Confidence</h4>
+<div class="space-y-6">
+<div>
+<div class="flex justify-between text-[10px] font-label font-bold mb-2">
+<span>EXECUTION PROBABILITY</span>
+<span class="text-primary">85%</span>
+</div>
+<input class="w-full accent-primary h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer" type="range"/>
+</div>
+<div>
+<div class="flex justify-between text-[10px] font-label font-bold mb-2">
+<span>AI Hallucination Tolerance</span>
+<span class="text-primary">Low (0.2)</span>
+</div>
+<input class="w-full accent-primary h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer" type="range"/>
+</div>
+</div>
+</div>
+<div class="bg-surface-container-lowest rounded-xl p-6 shadow-sm border-l-4 border-error">
+<h4 class="font-headline font-bold text-slate-800 text-sm mb-4 uppercase tracking-tighter">Stop Loss Mitigation</h4>
+<div class="space-y-2">
+<label class="block font-label text-[10px] font-bold text-slate-500 uppercase">Emergency Drawdown Kill-switch</label>
+<div class="flex items-center gap-2">
+<input class="bg-surface-container w-full border-none rounded text-sm font-label px-3 py-2" type="text" value="-2.5"/>
+<span class="font-label font-bold text-slate-400">%</span>
+</div>
+<p class="text-[10px] font-body text-slate-400 italic">Liquidates all open scenario-triggered positions if reached.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Right: Event Calendar & Market Context -->
+<div class="col-span-12 lg:col-span-4 space-y-6">
+<!-- Event Calendar -->
+<div class="bg-surface-container-high rounded-xl p-6 shadow-sm flex flex-col h-full">
+<div class="flex items-center justify-between mb-4">
+<h3 class="font-headline font-bold text-slate-800 text-sm">Macro Calendar</h3>
+<span class="material-symbols-outlined text-slate-500 cursor-pointer" data-icon="calendar_today">calendar_today</span>
+</div>
+<div class="space-y-4">
+<!-- Day Heading -->
+<div>
+<span class="font-label text-[10px] font-bold text-slate-400 uppercase">Today, Oct 12</span>
+<div class="mt-2 space-y-2">
+<div class="bg-white p-3 rounded-lg border-l-2 border-primary flex items-center justify-between">
+<div>
+<p class="font-body text-xs font-bold text-slate-800">CPI Report (Sep)</p>
+<p class="font-label text-[10px] text-slate-500">08:30 AM EST • Volatility High</p>
+</div>
+<div class="text-right">
+<p class="font-label text-xs font-bold text-primary">2.6% Est.</p>
+<p class="font-label text-[10px] text-slate-400">Prev 2.5%</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Next Day -->
+<div>
+<span class="font-label text-[10px] font-bold text-slate-400 uppercase">Tomorrow, Oct 13</span>
+<div class="mt-2 space-y-2">
+<div class="bg-white/50 p-3 rounded-lg border-l-2 border-slate-300 flex items-center justify-between opacity-70">
+<div>
+<p class="font-body text-xs font-bold text-slate-800">Jobless Claims</p>
+<p class="font-label text-[10px] text-slate-500">08:30 AM EST • Volatility Med</p>
+</div>
+<div class="text-right">
+<p class="font-label text-xs font-bold text-slate-800">210K Est.</p>
+</div>
+</div>
+<div class="bg-white/50 p-3 rounded-lg border-l-2 border-slate-300 flex items-center justify-between opacity-70">
+<div>
+<p class="font-body text-xs font-bold text-slate-800">PPI Report</p>
+<p class="font-label text-[10px] text-slate-500">08:30 AM EST • Volatility Low</p>
+</div>
+<div class="text-right">
+<p class="font-label text-xs font-bold text-slate-800">0.2% Est.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Next Week -->
+<div>
+<span class="font-label text-[10px] font-bold text-slate-400 uppercase">Oct 20</span>
+<div class="mt-2">
+<div class="bg-white p-3 rounded-lg border-l-2 border-error flex items-center justify-between">
+<div>
+<p class="font-body text-xs font-bold text-slate-800">FOMC Decision</p>
+<p class="font-label text-[10px] text-error font-bold">CRITICAL EVENT</p>
+</div>
+<div class="text-right">
+<p class="font-label text-xs font-bold text-slate-800">5.50% Hold</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Mini Chart Preview -->
+<div class="mt-auto pt-6">
+<div class="h-24 w-full relative">
+<!-- Mock sparkline -->
+<svg class="w-full h-full" viewbox="0 0 100 40">
+<path d="M0,35 L10,32 L20,38 L30,25 L40,28 L50,15 L60,18 L70,5 L80,12 L90,8 L100,15" fill="none" stroke="#4f6073" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+<path d="M0,35 L10,32 L20,38 L30,25 L40,28 L50,15 L60,18 L70,5 L80,12 L90,8 L100,15 L100,40 L0,40 Z" fill="url(#grad1)" opacity="0.1"></path>
+<defs>
+<lineargradient id="grad1" x1="0%" x2="0%" y1="0%" y2="100%">
+<stop offset="0%" style="stop-color:#4f6073;stop-opacity:1"></stop>
+<stop offset="100%" style="stop-color:#4f6073;stop-opacity:0"></stop>
+</lineargradient>
+</defs>
+</svg>
+<div class="absolute inset-0 flex items-center justify-center">
+<span class="font-label text-[10px] font-bold uppercase tracking-widest text-primary/30">VIX IV Projected</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom Narrative Context / LLM Analysis -->
+<div class="grid grid-cols-1 gap-6">
+<div class="bg-white border border-slate-100 p-6 rounded-xl flex items-start gap-6">
+<div class="bg-slate-50 p-4 rounded-lg shrink-0">
+<span class="material-symbols-outlined text-3xl text-primary" data-icon="psychology">psychology</span>
+</div>
+<div class="flex-1">
+<h4 class="font-headline font-extrabold text-slate-900 mb-2">Scenario Intelligence Summary</h4>
+<p class="text-sm font-body text-slate-600 leading-relaxed max-w-4xl">
+                            The current scenario set focuses on <span class="text-primary font-bold">Disinflationary Resilience</span>. By targeting CPI &lt; 2.6%, the LLM is instructed to capitalize on anticipated rate cut sentiments. Current market depth suggests a high-probability mean reversion if the initial print deviates by more than 0.15σ from the median estimate. Sentiment analysis of recent Fed speak remains hawkish, increasing the importance of the <span class="font-mono text-xs">Stop Loss Mitigation</span> thresholds defined above.
+                        </p>
+<div class="flex gap-4 mt-4">
+<span class="flex items-center gap-1 text-[10px] font-label font-bold text-success border border-success/20 bg-success/5 px-2 py-1 rounded">
+<span class="material-symbols-outlined text-[14px]" data-icon="check_circle" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+                                BACKTESTING VALIDATED
+                            </span>
+<span class="flex items-center gap-1 text-[10px] font-label font-bold text-slate-500 border border-slate-200 bg-slate-50 px-2 py-1 rounded">
+<span class="material-symbols-outlined text-[14px]" data-icon="schedule">schedule</span>
+                                LAST UPDATED: 2 MIN AGO
+                            </span>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- BottomNavBar (Mobile Only) -->
+<nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-2 flex justify-between items-center z-50">
+<div class="flex flex-col items-center gap-1 text-slate-400">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="text-[9px] font-label uppercase">Dash</span>
+</div>
+<div class="flex flex-col items-center gap-1 text-slate-400">
+<span class="material-symbols-outlined" data-icon="query_stats">query_stats</span>
+<span class="text-[9px] font-label uppercase">Market</span>
+</div>
+<div class="flex flex-col items-center gap-1 text-primary">
+<span class="material-symbols-outlined" data-icon="analytics" style="font-variation-settings: 'FILL' 1;">analytics</span>
+<span class="text-[9px] font-label uppercase font-bold">Scenario</span>
+</div>
+<div class="flex flex-col items-center gap-1 text-slate-400">
+<span class="material-symbols-outlined" data-icon="history">history</span>
+<span class="text-[9px] font-label uppercase">Backtest</span>
+</div>
+<div class="flex flex-col items-center gap-1 text-slate-400">
+<span class="material-symbols-outlined" data-icon="account_balance_wallet">account_balance_wallet</span>
+<span class="text-[9px] font-label uppercase">Wallet</span>
+</div>
+</nav>
+</body></html>
