@@ -208,7 +208,13 @@ Output JSON:
 def build_validate_position_prompt(entry_reasoning: dict, current_snapshot: dict) -> str:
     entry = json.dumps(entry_reasoning, indent=2, default=str)
     current = json.dumps(current_snapshot, indent=2, default=str)
-    return f"""Validate if entry reasoning is still valid.
+    return f"""Validate if the fundamental market premise for this position is still valid.
+
+CRITICAL INSTRUCTION:
+- Ignore exact 'price' entry conditions. Price fluctuations are managed by Stop-Loss and Take-Profit.
+- Focus ONLY on fundamental metrics (CVD, OI, Funding Rate, Macro, Volume) mentioned in the reasoning.
+- If the fundamental bearish/bullish premise is still intact, recommend HOLD.
+- Only recommend FULL_EXIT if the core thesis has fundamentally reversed.
 
 ENTRY REASONING: {entry}
 CURRENT MARKET: {current}

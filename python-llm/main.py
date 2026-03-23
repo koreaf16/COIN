@@ -101,9 +101,7 @@ async def sentiment(req: SentimentRequest):
     result.setdefault("sentiment", 0)
     result.setdefault("confidence", 0)
 
-    await log_llm_call("sentiment", None, "z2_llm_analysis",
-                       f"{len(req.news_items)} articles", text,
-                       result.get("confidence", 0), ms, tokens)
+    # Note: logged by JS (z2-intel/scheduler.js) to avoid duplicate entries
     return result
 
 
@@ -124,9 +122,7 @@ async def briefing(req: BriefingRequest):
     validated = validate_response(result, snapshot, "briefing")
     result["_warnings"] = validated["warnings"]
 
-    await log_llm_call("briefing", req.symbol, "z2_llm_analysis",
-                       f"briefing {req.symbol}", text,
-                       result.get("confidence", 0), ms, tokens)
+    # Note: logged by JS (z2-intel/scheduler.js)
     return result
 
 
@@ -150,9 +146,7 @@ async def scenario(req: ScenarioRequest):
     result["_warnings"] = validated["warnings"]
     result["_valid"] = validated["valid"]
 
-    await log_llm_call("scenario", req.symbol, "z2_execution_plan",
-                       f"scenario {req.symbol}", text,
-                       result.get("confidence", 0), ms, tokens)
+    # Note: logged by JS (z2-intel/scheduler.js)
     return result
 
 
@@ -182,10 +176,7 @@ async def unified_plan(req: UnifiedPlanRequest):
     result.setdefault("confidence", 0)
     result.setdefault("plans", [])
 
-    await log_llm_call("unified_plan", None, "z2_execution_plan",
-                       f"unified {len(req.symbols)} symbols", text,
-                       result.get("confidence", 0), ms, tokens)
-
+    # Note: logged by JS (z2-intel/scheduler.js)
     print(f"[LLM] Unified plan: {len(result.get('plans', []))} plans in {ms}ms ({route})")
     return result
 
