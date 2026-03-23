@@ -96,6 +96,7 @@ const economicCalendar = new EconomicCalendar();
 const fearGreedCollector = new FearGreedCollector();
 const stablecoinCollector = new StablecoinCollector();
 const tradeRecorder = new TradeRecorder();
+tradeRecorder.ringBuffer = ringBuffer; // 1초봉 캡처용
 const perfTracker = new PerformanceTracker();
 
 const wsConnector = new FuturesWsConnector(symbols, {

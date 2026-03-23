@@ -20,18 +20,20 @@ from pydantic import BaseModel
 from db import init_db, log_llm_call
 from embedder import encode, load_model
 from llm import generate, parse_json_response
-from oracle_reader import init_pool, get_market_snapshot, get_similar_states, get_recent_sentiment, get_recent_briefing
+from oracle_reader import init_pool, get_market_snapshot, get_similar_states, get_recent_sentiment, get_recent_briefing, get_all_symbols_snapshot, get_macro_snapshot
 from validator import validate_response
 from prompts import (
     SYSTEM_PROMPT,
     build_sentiment_prompt,
     build_briefing_prompt,
     build_scenario_prompt,
+    build_unified_plan_prompt,
     build_event_interpret_prompt,
     build_validate_position_prompt,
 )
 
-gpu_lock = asyncio.Lock()
+local_gpu_lock = asyncio.Lock()   # 로컬 GPU 전용 (Qwen, BGE-M3)
+claude_semaphore = asyncio.Semaphore(5)  # Claude CLI 동시 최대 5개
 
 
 @asynccontextmanager
@@ -62,6 +64,13 @@ class ScenarioRequest(BaseModel):
     fear_greed: dict | None = None
     stablecoin: dict | None = None
 
+class UnifiedPlanRequest(BaseModel):
+    symbols: list[str]
+    event_calendar: list[dict] | None = None
+    fear_greed: dict | None = None
+    stablecoin: dict | None = None
+    provider: str = "auto"  # "local", "cloud", "auto"
+
 class EventRequest(BaseModel):
     symbol: str
     event_text: str
@@ -86,7 +95,7 @@ async def health():
 async def sentiment(req: SentimentRequest):
     """매 5분: 뉴스 센티먼트 분석 (로컬)"""
     prompt = build_sentiment_prompt(req.news_items)
-    async with gpu_lock:
+    async with local_gpu_lock:
         text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 300, "sentiment")
     result = parse_json_response(text)
     result.setdefault("sentiment", 0)
@@ -106,7 +115,7 @@ async def briefing(req: BriefingRequest):
     similar = await get_similar_states(req.symbol)
 
     prompt = build_briefing_prompt(snapshot, sentiment, similar)
-    async with gpu_lock:
+    async with claude_semaphore:
         text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 1500, "briefing")
     result = parse_json_response(text)
     result.setdefault("confidence", 0)
@@ -132,7 +141,7 @@ async def scenario(req: ScenarioRequest):
 
     prompt = build_scenario_prompt(snapshot, briefing_data or {}, similar, req.event_calendar,
                                   req.fear_greed, req.stablecoin)
-    async with gpu_lock:
+    async with claude_semaphore:
         text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 2000, "scenario")
     result = parse_json_response(text)
     result.setdefault("confidence", 0)
@@ -147,13 +156,47 @@ async def scenario(req: ScenarioRequest):
     return result
 
 
+@app.post("/api/unified-plan")
+async def unified_plan(req: UnifiedPlanRequest):
+    """매 1분: 전체 심볼 통합 분석 → 최적 플랜 생성"""
+    all_snapshots = await get_all_symbols_snapshot(req.symbols)
+    macro = await get_macro_snapshot()
+
+    prompt = build_unified_plan_prompt(
+        all_snapshots, macro, req.event_calendar, req.fear_greed, req.stablecoin
+    )
+
+    # provider 선택: local(Qwen) 또는 cloud(Claude)
+    route = req.provider
+    if route == "auto":
+        route = "local"  # 1분 주기 기본은 로컬 (빠름)
+
+    if route == "local":
+        async with local_gpu_lock:
+            text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 3000, "local")
+    else:
+        async with claude_semaphore:
+            text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 3000, "briefing")
+
+    result = parse_json_response(text)
+    result.setdefault("confidence", 0)
+    result.setdefault("plans", [])
+
+    await log_llm_call("unified_plan", None, "z2_execution_plan",
+                       f"unified {len(req.symbols)} symbols", text,
+                       result.get("confidence", 0), ms, tokens)
+
+    print(f"[LLM] Unified plan: {len(result.get('plans', []))} plans in {ms}ms ({route})")
+    return result
+
+
 @app.post("/api/interpret-event")
 async def interpret_event(req: EventRequest):
     """이벤트 발생 시: 3-5초 긴급 해석 (클라우드)"""
     snapshot = await get_market_snapshot(req.symbol)
     prompt = build_event_interpret_prompt(req.event_text, snapshot)
 
-    async with gpu_lock:
+    async with claude_semaphore:
         text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 800, "interpret_event")
     result = parse_json_response(text)
     result.setdefault("confidence", 0)
@@ -170,7 +213,7 @@ async def validate_position(req: ValidateRequest):
     snapshot = await get_market_snapshot(req.symbol)
     prompt = build_validate_position_prompt(req.entry_reasoning, snapshot)
 
-    async with gpu_lock:
+    async with local_gpu_lock:
         text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 800, "validate_position")
     result = parse_json_response(text)
     result.setdefault("recommendation", "HOLD")
@@ -185,7 +228,7 @@ async def validate_position(req: ValidateRequest):
 @app.post("/api/embed")
 async def embed_text(req: EmbedRequest):
     """텍스트 임베딩 (BGE-M3)"""
-    async with gpu_lock:
+    async with local_gpu_lock:
         vector = encode(req.text)
     return {"vector": vector, "dimensions": len(vector)}
 

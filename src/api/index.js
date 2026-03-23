@@ -152,6 +152,42 @@ export class ApiServer {
       } finally { await conn.close(); }
     });
 
+    // ── Position Candles (거래 1초봉 데이터 조회) ──
+    this.app.get('/api/positions/:id/candles', async (req) => {
+      const { id } = req.params;
+      const conn = await getPool().getConnection();
+      try {
+        const result = await conn.execute(
+          `SELECT id, symbol, direction, entry_price, entry_time, exit_price, exit_time,
+                  target_price, safety_stop, candle_data
+           FROM z4_positions WHERE id = :id`,
+          { id }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        if (!result.rows?.length) return { error: 'Position not found' };
+
+        const row = result.rows[0];
+        let candles = [];
+        if (row.CANDLE_DATA) {
+          try {
+            candles = JSON.parse(typeof row.CANDLE_DATA === 'string' ? row.CANDLE_DATA : await row.CANDLE_DATA);
+          } catch {}
+        }
+
+        return {
+          id: row.ID,
+          symbol: row.SYMBOL,
+          direction: row.DIRECTION,
+          entryPrice: row.ENTRY_PRICE ? parseFloat(row.ENTRY_PRICE) : null,
+          entryTime: row.ENTRY_TIME instanceof Date ? Math.floor(row.ENTRY_TIME.getTime() / 1000) : null,
+          exitPrice: row.EXIT_PRICE ? parseFloat(row.EXIT_PRICE) : null,
+          exitTime: row.EXIT_TIME instanceof Date ? Math.floor(row.EXIT_TIME.getTime() / 1000) : null,
+          targetPrice: row.TARGET_PRICE ? parseFloat(row.TARGET_PRICE) : null,
+          safetyStop: row.SAFETY_STOP ? parseFloat(row.SAFETY_STOP) : null,
+          candles,
+        };
+      } finally { await conn.close(); }
+    });
+
     // ── Positions (오픈/클로즈) ──
     this.app.get('/api/positions', async (req) => {
       const { status = 'OPEN' } = req.query;

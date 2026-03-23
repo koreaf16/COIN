@@ -14,12 +14,14 @@ export class RuleEngine {
     this.ringBuffer = ringBuffer;
     this.macroCollector = macroCollector;
     this.symbols = symbols;
+    this.economicCalendar = opts.economicCalendar || null;
     this.intervalMs = (opts.intervalMs || 1000); // 1초
 
     this.planCache = new PlanCache({ refreshIntervalSec: opts.cacheRefreshSec || 60 });
     this._timer = null;
     this.checkCount = 0;
     this.signalCount = 0;
+    this._eventPauseLogged = false;
 
     this.onSignal = null; // 콜백: (signal) => void
   }
@@ -39,6 +41,9 @@ export class RuleEngine {
   _evaluate() {
     this.checkCount++;
 
+    // 고임팩트 경제 이벤트 ±15분 이내 → 진입 일시정지
+    if (this._isEventWindow()) return;
+
     for (const symbol of this.symbols) {
       const plans = this.planCache.getActivePlans(symbol);
       if (plans.length === 0) continue;
@@ -50,6 +55,7 @@ export class RuleEngine {
         const result = evaluateConditions(plan.entryConditions, currentData);
         if (result.met) {
           this._emitSignal(plan, currentData, result.details);
+          break; // 심볼당 1개 시그널만 (이중 진입 방지)
         }
       }
     }
@@ -89,6 +95,30 @@ export class RuleEngine {
       macro_regime: this.macroCollector?.getRegime() || 'neutral',
       volume_surge: volumeSurge,
     };
+  }
+
+  /** 고임팩트 경제 이벤트 ±15분 내 → true (진입 일시정지) */
+  _isEventWindow() {
+    if (!this.economicCalendar) return false;
+    const events = this.economicCalendar.getNext24h?.() || [];
+    const now = Date.now();
+    const windowMs = 15 * 60 * 1000;
+
+    for (const evt of events) {
+      const evtTime = new Date(evt.datetime || evt.date).getTime();
+      if (isNaN(evtTime)) continue;
+      const impact = (evt.impact || evt.importance || '').toLowerCase();
+      if (impact !== 'high' && impact !== '높음') continue;
+      if (Math.abs(now - evtTime) <= windowMs) {
+        if (!this._eventPauseLogged) {
+          console.log(`[Z3-Rule] EVENT PAUSE: ${evt.title || evt.event} (±15min window)`);
+          this._eventPauseLogged = true;
+        }
+        return true;
+      }
+    }
+    this._eventPauseLogged = false;
+    return false;
   }
 
   async _emitSignal(plan, currentData, details) {

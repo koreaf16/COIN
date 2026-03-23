@@ -17,6 +17,7 @@
 import { BinanceFuturesClient } from './binance-futures-client.js';
 import { RiskGate } from './risk-gate.js';
 import { SmartExit } from './smart-exit.js';
+import { evaluateConditions } from './condition-evaluator.js';
 
 export class Executor {
   constructor(ringBuffer, opts = {}) {
@@ -95,7 +96,10 @@ export class Executor {
   stop() {
     if (this._monitorTimer) clearInterval(this._monitorTimer);
     if (this._syncTimer) clearInterval(this._syncTimer);
-    if (this._dailyResetTimer) clearTimeout(this._dailyResetTimer);
+    if (this._dailyResetTimer) {
+      clearTimeout(this._dailyResetTimer);
+      clearInterval(this._dailyResetTimer);
+    }
     this.smartExit.stopAll();
     console.log(`[Z3-Exec] Stopped (entries=${this.stats.entries}, exits=${this.stats.exits})`);
   }
@@ -154,6 +158,20 @@ export class Executor {
       let orderId = null;
       let stopOrderId = null;
 
+      // [Bug#7 수정] liveMode 블록 진입 전에 effectiveStop 미리 계산 (ReferenceError 방지)
+      let effectiveStop = check.safetyStop;
+      if (signal.stopPrice) {
+        const isLong = signal.direction === 'LONG';
+        const llmStopValid = isLong
+          ? signal.stopPrice < entryPrice  // LONG: 손절가 < 진입가
+          : signal.stopPrice > entryPrice; // SHORT: 손절가 > 진입가
+        if (llmStopValid) {
+          const llmStopDist = Math.abs(entryPrice - signal.stopPrice);
+          const safetyStopDist = Math.abs(entryPrice - check.safetyStop);
+          effectiveStop = llmStopDist <= safetyStopDist ? signal.stopPrice : check.safetyStop;
+        }
+      }
+
       if (this.liveMode) {
         // ── 실제 거래소 주문 ──
 
@@ -211,22 +229,6 @@ export class Executor {
         console.log(`[Z3-Exec] SIM slippage ${slippageBps.toFixed(2)}bps → entry=$${entryPrice.toFixed(4)} (market=$${currentPrice})`);
       }
 
-      // LLM 손절가가 있으면 사용, 없으면 RiskGate 고정 2% 사용
-      // 단, LLM 손절가가 고정 2%보다 넓으면 고정 2%로 제한 (안전망)
-      let effectiveStop = check.safetyStop;
-      if (signal.stopPrice) {
-        const isLong = signal.direction === 'LONG';
-        const llmStopValid = isLong
-          ? signal.stopPrice < entryPrice  // LONG: 손절가 < 진입가
-          : signal.stopPrice > entryPrice; // SHORT: 손절가 > 진입가
-        if (llmStopValid) {
-          // LLM 손절가가 safetyStop보다 가까우면 LLM것 사용 (더 타이트)
-          const llmStopDist = Math.abs(entryPrice - signal.stopPrice);
-          const safetyStopDist = Math.abs(entryPrice - check.safetyStop);
-          effectiveStop = llmStopDist <= safetyStopDist ? signal.stopPrice : check.safetyStop;
-        }
-      }
-
       // 포지션 등록 (SIM 모드 orderId는 문자열이므로 DB에 저장 가능한 숫자 ID 별도 생성)
       const posId = this.liveMode ? (orderId || Date.now()) : Date.now();
       const position = {
@@ -257,7 +259,12 @@ export class Executor {
 
       // 지능형 청산 모니터링
       this.smartExit.startValidation(position, (reason, details) => {
-        this._exitPosition(posId, this.ringBuffer.getLastPrice(position.symbol), reason, details);
+        const price = this.ringBuffer.getLastPrice(position.symbol);
+        if (reason === 'PARTIAL_EXIT') {
+          this._partialExitPosition(posId, price, reason, details);
+        } else {
+          this._exitPosition(posId, price, reason, details);
+        }
       });
 
       console.log(
@@ -290,7 +297,22 @@ export class Executor {
     }
   }
 
-  /** 100ms 루프: 가격 기반 청산 체크 */
+  /** 시장 데이터 스냅샷 (stop_conditions 평가용) */
+  _buildMarketData(symbol) {
+    const snapshot = this.ringBuffer.getSnapshot(symbol);
+    const deriv = snapshot.derivatives || {};
+    const mark = snapshot.markPrice || {};
+    return {
+      price: snapshot.price,
+      funding_rate: mark.fundingRate || deriv.funding_rate || 0,
+      oi_change_pct: deriv.oi_change_pct || 0,
+      cvd_direction: 0,
+      volume_surge: 1.0,
+      macro_regime: 'neutral',
+    };
+  }
+
+  /** 100ms 루프: 가격 기반 청산 체크 + stop_conditions 평가 */
   _monitorPositions() {
     for (const [posId, position] of this.activePositions) {
       const currentPrice = this.ringBuffer.getLastPrice(position.symbol);
@@ -299,6 +321,21 @@ export class Executor {
       const exitReason = this.smartExit.checkPriceExit(position, currentPrice);
       if (exitReason) {
         this._exitPosition(posId, currentPrice, exitReason);
+        continue;
+      }
+
+      // 경로 8: stop_conditions 평가 (5초 주기)
+      if (position.stopConditions && Object.keys(position.stopConditions).length > 0) {
+        const now = Date.now();
+        if (!position._lastStopCondCheck || now - position._lastStopCondCheck >= 5000) {
+          position._lastStopCondCheck = now;
+          const marketData = this._buildMarketData(position.symbol);
+          const result = evaluateConditions(position.stopConditions, marketData);
+          if (result.met) {
+            console.log(`[Z3-Exec] STOP_CONDITION met: ${position.symbol}`, result.details.map(d => `${d.field} ${d.operator} ${d.expected} (actual=${d.actual})`).join(', '));
+            this._exitPosition(posId, currentPrice, 'STOP_CONDITION', result.details);
+          }
+        }
       }
     }
   }
@@ -306,12 +343,11 @@ export class Executor {
   /** 포지션 청산 */
   async _exitPosition(posId, exitPrice, exitReason, exitDetails = null) {
     const position = this.activePositions.get(posId);
-    if (!position) return;
+    if (!position || position._exiting) return;
 
-    // [Bug#1,2,3] 즉시 메모리에서 제거 — async race condition 방지 + cleanup 보장
-    this.activePositions.delete(posId);
+    // [Bug#1,2,3 수정] 진행 중 플래그로 async race condition 방지 (실패 시 복구 가능하도록)
+    position._exiting = true;
     this.smartExit.stopValidation(posId);
-    this.riskGate.removeTrade(posId);
 
     try {
       if (this.liveMode) {
@@ -338,6 +374,10 @@ export class Executor {
           this.walletBalance = bal.total;
         } catch (_) {}
       }
+
+      // 청산 성공 시 메모리 정리
+      this.activePositions.delete(posId);
+      this.riskGate.removeTrade(posId);
 
       // PnL 계산
       const isLong = position.direction === 'LONG';
@@ -373,6 +413,103 @@ export class Executor {
 
     } catch (err) {
       console.error(`[Z3-Exec] Exit failed ${position.symbol}: ${err.message}`);
+      
+      if (err.message.includes('ReduceOnly') || err.message.includes('already closed')) {
+        // 이미 닫힌 거면 강제 완료 처리
+        this.activePositions.delete(posId);
+        this.riskGate.removeTrade(posId);
+        if (this.onTrade) {
+          this.onTrade({
+            action: 'EXIT', positionId: posId, symbol: position.symbol, direction: position.direction,
+            entryPrice: position.entryPrice, entryTime: position.entryTime, exitPrice, exitReason: 'EXCHANGE_CLOSED',
+            qty: position.qty, pnlPct: 0, pnlNet: 0, feeTotal: 0, holdTimeSec: 0, planId: position.planId, entryReasoning: position.entryReasoning
+          });
+        }
+      } else {
+        // 일시적 네트워크 오류 등 -> 롤백
+        position._exiting = false;
+        this.smartExit.startValidation(position, (reason, details) => {
+          this._exitPosition(posId, this.ringBuffer.getLastPrice(position.symbol), reason, details);
+        });
+      }
+    }
+  }
+
+  /** 부분 청산 (50%) — LLM PARTIAL_EXIT 추천 시 */
+  async _partialExitPosition(posId, exitPrice, reason, exitDetails = null) {
+    const position = this.activePositions.get(posId);
+    if (!position || position._partialExited) return;
+
+    position._partialExited = true;
+    
+    // 거래소 최소 주문 단위에 맞게 수량 포맷팅 (반올림 오차 방지)
+    const exactQty = position.qty;
+    const partialQty = this.liveMode 
+      ? this.binance._roundQty(position.symbol, exactQty / 2)
+      : exactQty / 2;
+    const remainQty = exactQty - partialQty;
+
+    if (partialQty <= 0 || remainQty <= 0) {
+       console.warn(`[Z3-Exec] PARTIAL_EXIT skipped ${position.symbol}: qty too small (${exactQty})`);
+       position._partialExited = false;
+       return;
+    }
+
+    try {
+      if (this.liveMode) {
+        // 기존 SL/TP 주문 취소
+        try { await this.binance.cancelAllOrders(position.symbol); } catch (_) {}
+
+        // 50% 청산
+        const closeOrder = await this.binance.closePosition(position.symbol, position.direction, partialQty);
+        exitPrice = closeOrder.avgPrice || exitPrice;
+
+        // 잔여 수량에 대해 손익분기 스탑 재설정
+        const stopSide = position.direction === 'LONG' ? 'SELL' : 'BUY';
+        try {
+          await this.binance.stopMarketOrder(position.symbol, stopSide, remainQty, position.entryPrice);
+        } catch (err) {
+          console.error(`[Z3-Exec] Breakeven stop failed: ${err.message}`);
+        }
+
+        // 잔고 갱신
+        try {
+          const bal = await this.binance.getBalance();
+          this.balance = bal.available;
+          this.walletBalance = bal.total;
+        } catch (_) {}
+      }
+
+      // 포지션 업데이트: 수량 절반, 손절 → 진입가 (손익분기)
+      position.qty = remainQty;
+      position.safetyStop = position.entryPrice;
+
+      const isLong = position.direction === 'LONG';
+      const dir = isLong ? 1 : -1;
+      const pnlPct = dir * ((exitPrice - position.entryPrice) / position.entryPrice) * 100;
+      const feeRate = 0.0008;
+      const feeTotal = partialQty * position.entryPrice * feeRate;
+      const pnlNet = dir * (exitPrice - position.entryPrice) * partialQty - feeTotal;
+
+      if (!this.liveMode) this.balance += pnlNet;
+
+      console.log(
+        `[Z3-Exec] PARTIAL_EXIT (50%) ${position.symbol} @ $${exitPrice.toFixed(2)} ` +
+        `PnL=${pnlNet >= 0 ? '+' : ''}${pnlNet.toFixed(2)} USDT remain=${remainQty.toFixed(6)}`
+      );
+
+      if (this.onTrade) {
+        this.onTrade({
+          action: 'PARTIAL_EXIT', positionId: posId,
+          symbol: position.symbol, direction: position.direction,
+          entryPrice: position.entryPrice, exitPrice,
+          exitReason: reason, qty: partialQty, remainQty,
+          pnlPct, pnlNet, feeTotal, planId: position.planId,
+        });
+      }
+    } catch (err) {
+      console.error(`[Z3-Exec] Partial exit failed ${position.symbol}: ${err.message}`);
+      position._partialExited = false; // 실패 시 재시도 가능
     }
   }
 
@@ -385,7 +522,7 @@ export class Executor {
       let dbPositions = [];
       try {
         const result = await conn.execute(
-          `SELECT id, symbol, direction, entry_price, target_price, safety_stop, time_stop_min, entry_time, plan_id
+          `SELECT id, symbol, direction, entry_price, target_price, safety_stop, time_stop_min, entry_time, plan_id, entry_reasoning
            FROM z4_positions WHERE status = 'OPEN'`,
           {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
@@ -422,6 +559,13 @@ export class Executor {
         const safetyStopDir = row.DIRECTION === 'LONG' ? -1 : 1;
         const safetyStop = entryPrice * (1 + safetyStopDir * this.riskGate.safetyStopPct / 100);
 
+        let parsedReasoning = {};
+        if (row.ENTRY_REASONING) {
+          try {
+            parsedReasoning = typeof row.ENTRY_REASONING === 'string' ? JSON.parse(row.ENTRY_REASONING) : row.ENTRY_REASONING;
+          } catch (e) {}
+        }
+
         const position = {
           id: posId,
           planId: row.PLAN_ID,
@@ -434,7 +578,7 @@ export class Executor {
           safetyStop: row.SAFETY_STOP ? parseFloat(row.SAFETY_STOP) : safetyStop,
           timeStopMin: row.TIME_STOP_MIN ? parseFloat(row.TIME_STOP_MIN) : 15,
           confidence: 0.5,
-          entryReasoning: {},
+          entryReasoning: parsedReasoning,
         };
 
         this.activePositions.set(posId, position);

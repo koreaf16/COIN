@@ -86,22 +86,22 @@ export class LLMScheduler {
     if (!this._running) return;
     this.stats.chains++;
 
-    // 상위 심볼 순차 처리
+    // Claude CLI는 비동기 병렬 실행 가능 → 심볼 단위 동시 처리
     const targetSymbols = this.symbols.slice(0, this.topSymbolsForScenario);
-
-    for (const symbol of targetSymbols) {
-      if (!this._running) break;
-      try {
-        await this._runChainForSymbol(symbol);
-      } catch (err) {
+    const results = await Promise.allSettled(
+      targetSymbols.map(symbol => this._runChainForSymbol(symbol))
+    );
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
         this.stats.errors++;
-        console.error(`[Z2-Sched] Chain error ${symbol}:`, err.message);
+        console.error(`[Z2-Sched] Chain error ${targetSymbols[i]}:`, r.reason?.message);
       }
-    }
+    });
   }
 
   /** 단일 심볼: 브리핑 → 즉시 시나리오 (연쇄) */
   async _runChainForSymbol(symbol) {
+    if (!this._running) return;
     // 1. 브리핑 (Claude CLI ~10초)
     const briefing = await getBriefing(symbol);
     if (!briefing || briefing.confidence < 0.4) return;
@@ -123,12 +123,21 @@ export class LLMScheduler {
 
     await this._saveAnalysis(symbol, 'scenario', scenario, 'cloud');
 
-    // 시나리오별 execution_plan 저장
+    // 시나리오별 execution_plan 저장 (추천 시나리오 우선)
     const scenarios = scenario.scenarios || [];
+    const recommended = scenario.recommended_scenario;
     let planCount = 0;
     for (const s of scenarios) {
-      if (s.probability < 0.2) continue;
-      await this._savePlan(symbol, s, scenario.confidence);
+      const isRecommended = s.id === recommended;
+      // 추천: probability > 0.2, 전체 confidence, 30분 유효
+      // 비추천: probability > 0.4만, confidence 절반, 15분 유효
+      if (isRecommended) {
+        if (s.probability < 0.2) continue;
+        await this._savePlan(symbol, s, scenario.confidence, 30);
+      } else {
+        if (s.probability < 0.4) continue;
+        await this._savePlan(symbol, s, scenario.confidence * 0.5, 15);
+      }
       planCount++;
     }
 
@@ -160,16 +169,17 @@ export class LLMScheduler {
     }
   }
 
-  async _savePlan(symbol, scenario, overallConfidence) {
+  async _savePlan(symbol, scenario, overallConfidence, validMinutes = 30) {
     const conn = await getPool().getConnection();
     try {
       await conn.execute(
         `INSERT INTO z2_execution_plan
          (symbol, valid_until, direction, entry_conditions, target_price, stop_price,
           stop_conditions, time_stop_min, confidence, reasoning, scenario_id, status)
-         VALUES (:sym, SYSTIMESTAMP + INTERVAL '30' MINUTE, :dir, :entry, :target, :stopPrice,
+         VALUES (:sym, SYSTIMESTAMP + NUMTODSINTERVAL(:validMin, 'MINUTE'), :dir, :entry, :target, :stopPrice,
                  :stop, :timeStop, :conf, :reasoning, :scenId, 'ACTIVE')`,
         {
+          validMin: validMinutes,
           sym: symbol,
           dir: scenario.direction || 'LONG',
           entry: { type: oracledb.DB_TYPE_JSON, val: scenario.entry_conditions || {} },

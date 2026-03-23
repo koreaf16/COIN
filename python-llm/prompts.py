@@ -130,6 +130,60 @@ Output JSON:
 }}"""
 
 
+def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
+                              event_calendar: list | None = None,
+                              fear_greed: dict | None = None,
+                              stablecoin: dict | None = None) -> str:
+    """모든 심볼을 하나의 컨텍스트에서 분석 → 최적 플랜만 생성"""
+    symbols_text = json.dumps(all_snapshots, indent=2, default=str)
+    macro_text = json.dumps(macro, indent=2, default=str) if macro else "N/A"
+    cal_text = json.dumps(event_calendar, indent=2) if event_calendar else "None"
+    fg_text = json.dumps(fear_greed, indent=2) if fear_greed else "N/A"
+    sc_text = json.dumps(stablecoin, indent=2) if stablecoin else "N/A"
+
+    return f"""Analyze ALL symbols below and generate execution plans for the BEST opportunities only.
+
+SYMBOLS DATA (each key = symbol):
+{symbols_text}
+
+MACRO: {macro_text}
+EVENTS_24H: {cal_text}
+FEAR_GREED: {fg_text}
+STABLECOIN: {sc_text}
+
+RULES:
+1. Compare symbols RELATIVELY — pick ONLY the strongest setups (max 5 plans total)
+2. Skip symbols with no clear edge. Generating 0 plans is acceptable.
+3. A trade MUST be able to profit at least 0.20% raw (after 0.08% round-trip fee = 0.12% net minimum)
+4. target_price must be realistic based on ATR — do NOT set unreachable targets
+5. Risk:Reward (target distance / stop distance) >= 1.5
+6. Cross-symbol logic: if BTC is bearish, prefer SHORT on weaker alts rather than SHORT BTC itself
+
+Operators: "<", ">", "<=", ">=", "==", "in"
+Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio)
+
+Output JSON:
+{{
+  "plans": [
+    {{
+      "symbol": "<SYMBOL>",
+      "direction": "<LONG|SHORT>",
+      "entry_conditions": {{
+        "price": {{"op": "<=", "value": 68000}},
+        "funding_rate": {{"op": "<", "value": 0.0001}}
+      }},
+      "target_price": <number - REQUIRED, realistic based on ATR>,
+      "stop_price": <number - REQUIRED, invalidation level>,
+      "stop_conditions": {{}},
+      "time_stop_min": <int>,
+      "reasoning": "<한국어 — 반드시 구체적 수치, 크로스심볼 비교, 목표가/손절가 근거 포함>"
+    }}
+  ],
+  "market_summary": "<한국어 1-2문장 전체 시장 요약>",
+  "confidence": <0-1>
+}}"""
+
+
 def build_event_interpret_prompt(event_text: str, snapshot: dict) -> str:
     data = json.dumps(snapshot, indent=2, default=str)
     return f"""URGENT: Interpret this event for trading.

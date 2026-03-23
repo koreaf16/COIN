@@ -42,3 +42,4 @@ Desktop.ini
 # Temp files
 *.tmp
 *.temp
+.aider*

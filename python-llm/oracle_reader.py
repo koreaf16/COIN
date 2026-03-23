@@ -104,6 +104,28 @@ async def get_market_snapshot(symbol: str) -> dict:
     return snapshot
 
 
+async def get_all_symbols_snapshot(symbols: list[str]) -> dict:
+    """전체 심볼의 시장 스냅샷을 한번에 조회"""
+    result = {}
+    for sym in symbols:
+        snap = await get_market_snapshot(sym)
+        if snap and snap.get("price"):
+            result[sym] = snap
+    return result
+
+
+async def get_macro_snapshot() -> dict:
+    """매크로 지표 스냅샷"""
+    macro = {}
+    for ind in ["DXY", "VIX", "US10Y", "NQ_FUTURE"]:
+        r = _query_one(
+            "SELECT value FROM z0_macro_data WHERE indicator = :ind "
+            "ORDER BY ts DESC FETCH FIRST 1 ROW ONLY", {"ind": ind})
+        if r:
+            macro[ind] = float(r[0])
+    return macro
+
+
 async def get_similar_states(symbol: str, limit: int = 50) -> dict | None:
     """유사 과거 시장 상태 검색"""
     r = _query_one(

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Candle1sChart } from '@/components/candle-1s-chart';
+import { TradeReplayChart } from '@/components/trade-replay-chart';
 
 /** 가격 표시: 가격대에 맞는 소수점 자릿수 자동 결정 */
 const fmtPrice = (price?: number) => {
@@ -21,6 +22,7 @@ export default function TerminalPage() {
   const [totalPnl, setTotalPnl] = useState(0);
   const [recentClosed, setRecentClosed] = useState<any[]>([]);
   const [planStatuses, setPlanStatuses] = useState<any[]>([]);
+  const [replayTradeId, setReplayTradeId] = useState<number | null>(null);
 
   // LLM 활동 로그
   const [llmLogs, setLlmLogs] = useState<any[]>([]);
@@ -276,7 +278,7 @@ export default function TerminalPage() {
                   const pnl = p.pnl_amount ?? 0;
                   const isProfit = pnl >= 0;
                   return (
-                    <tr key={p.id} className="border-b border-surface-container-high/10 hover:bg-surface">
+                    <tr key={p.id} className="border-b border-surface-container-high/10 hover:bg-surface cursor-pointer" onClick={() => setReplayTradeId(replayTradeId === p.id ? null : p.id)}>
                       <td className="p-2.5 text-outline">{p.exit_time ? new Date(p.exit_time).toLocaleString('ko-KR', { timeZone: 'America/New_York', hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '--'}</td>
                       <td className="p-2.5 font-bold">{String(p.symbol).replace('USDT', '')}</td>
                       <td className="p-2.5"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${p.direction === 'LONG' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'}`}>{p.direction}</span></td>
@@ -291,6 +293,14 @@ export default function TerminalPage() {
             </table>
           )}
         </div>
+
+        {/* 리플레이 차트 (청산 거래 클릭 시) */}
+        {replayTradeId && (
+          <TradeReplayChart
+            positionId={replayTradeId}
+            onClose={() => setReplayTradeId(null)}
+          />
+        )}
       </div>
 
       {/* ── 우측: LLM 활동 로그 ── */}

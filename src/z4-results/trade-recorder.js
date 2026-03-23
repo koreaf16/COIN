@@ -69,6 +69,13 @@ export class TradeRecorder {
         const candles = this._buildCandles1s(trades);
         if (!candles.length) return;
 
+        // 진입 시점 데이터가 포함된 경우에만 덮어쓰기 (ringBuffer 밀림 방지)
+        const firstCandleTime = candles[0].time;
+        if (firstCandleTime > entryTimeSec + 60) {
+          // 새 캡처가 진입 시점을 포함하지 않으면 기존 데이터 유지
+          return;
+        }
+
         const conn = await getPool().getConnection();
         try {
           await conn.execute(

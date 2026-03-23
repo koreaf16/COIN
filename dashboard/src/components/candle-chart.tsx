@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { createChart, CandlestickSeries, HistogramSeries, ColorType, type IChartApi, type ISeriesApi } from 'lightweight-charts';
+import { createChart, CandlestickSeries, HistogramSeries, ColorType, type IChartApi, type ISeriesApi, createSeriesMarkers } from 'lightweight-charts';
 
 interface Kline {
   ts: string;
@@ -166,7 +166,7 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
             const entryTs = Math.floor(entryLocal / 60) * 60;
             const etTime = new Date(entryFocus.entryTime * 1000)
               .toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit' });
-            candleRef.current.setMarkers([{
+            createSeriesMarkers(candleRef.current, [{
               time: entryTs as any,
               position: 'belowBar',
               color: '#2962FF',
