@@ -363,7 +363,9 @@ export class Executor {
         this.onTrade({
           action: 'EXIT', positionId: posId,
           symbol: position.symbol, direction: position.direction,
-          entryPrice: position.entryPrice, exitPrice, exitReason, exitDetails,
+          entryPrice: position.entryPrice, entryTime: position.entryTime,
+          exitPrice, exitReason, exitDetails,
+          targetPrice: position.targetPrice, safetyStop: position.safetyStop,
           qty: position.qty, pnlPct, pnlNet, feeTotal, holdTimeSec,
           planId: position.planId, entryReasoning: position.entryReasoning,
         });
