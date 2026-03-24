@@ -108,13 +108,15 @@ Output JSON:
 def build_scenario_prompt(snapshot: dict, briefing: dict, similar_states: dict | None,
                           event_calendar: list | None = None,
                           fear_greed: dict | None = None,
-                          stablecoin: dict | None = None) -> str:
+                          stablecoin: dict | None = None,
+                          recent_losses: list | None = None) -> str:
     data = json.dumps(snapshot, indent=2, default=str)
     brief = json.dumps(briefing, indent=2)
     similar_text = json.dumps(similar_states, indent=2) if similar_states else "N/A"
     cal_text = json.dumps(event_calendar, indent=2) if event_calendar else "None"
     fg_text = json.dumps(fear_greed, indent=2) if fear_greed else "N/A"
     sc_text = json.dumps(stablecoin, indent=2) if stablecoin else "N/A"
+    loss_text = json.dumps(recent_losses, indent=2) if recent_losses else "None"
 
     return f"""Generate 3 trading scenarios with machine-readable entry conditions.
 
@@ -124,6 +126,11 @@ HISTORICAL: {similar_text}
 EVENTS: {cal_text}
 FEAR_GREED: {fg_text}
 STABLECOIN_SUPPLY: {sc_text}
+RELEVANT_RECENT_LOSSES (RAG): {loss_text}
+
+Rules for scenarios:
+1. Review RELEVANT_RECENT_LOSSES. Do NOT suggest a plan if current market metrics match a pattern that previously led to a loss (e.g., catching a falling knife when Price DOWN & OI UP).
+2. If current metrics (volatility_acceleration, funding_rate, etc.) look like a trap, increase the confidence threshold for entry.
 
 Operators: "<", ">", "<=", ">=", "==", "in"
 Fields and data types (use ONLY numeric comparisons for numeric fields):
@@ -133,6 +140,7 @@ Fields and data types (use ONLY numeric comparisons for numeric fields):
 - cvd_direction: float (-1.0 = strong sell pressure, 0 = neutral, +1.0 = strong buy pressure) — use >, <, >=, <=
 - macro_regime: string enum ("risk_on", "risk_off", "neutral") — use "in" or "=="
 - volume_surge: float (ratio vs 5min avg, e.g. 2.0 = 2x normal volume) — use >, <, >=, <=
+- volatility_acceleration: float (current ATR / recent 10-bar avg ATR) — use >, <, >=, <=
 IMPORTANT: Never use string values like "positive"/"negative" or booleans for numeric fields.
 
 IMPORTANT: Every scenario MUST include both target_price AND stop_price.
@@ -225,13 +233,15 @@ Output JSON:
 def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
                               event_calendar: list | None = None,
                               fear_greed: dict | None = None,
-                              stablecoin: dict | None = None) -> str:
+                              stablecoin: dict | None = None,
+                              recent_losses: dict | None = None) -> str:
     """유저 메시지 = 동적 데이터만 (정적 규칙은 시스템 프롬프트에 포함)"""
     symbols_text = json.dumps(all_snapshots, indent=2, default=str)
     macro_text = json.dumps(macro, indent=2, default=str) if macro else "N/A"
     cal_text = json.dumps(event_calendar, indent=2) if event_calendar else "None"
     fg_text = json.dumps(fear_greed, indent=2) if fear_greed else "N/A"
     sc_text = json.dumps(stablecoin, indent=2) if stablecoin else "N/A"
+    loss_text = json.dumps(recent_losses, indent=2) if recent_losses else "None"
 
     return f"""SYMBOLS DATA (each key = symbol):
 {symbols_text}
@@ -239,7 +249,13 @@ def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
 MACRO: {macro_text}
 EVENTS_24H: {cal_text}
 FEAR_GREED: {fg_text}
-STABLECOIN: {sc_text}"""
+STABLECOIN: {sc_text}
+
+RELEVANT_RECENT_LOSSES (RAG):
+{loss_text}
+
+CRITICAL: Analyze recent losses. If current market speed (volatility_acceleration) or OI-Price patterns match those losses, set higher confidence bars or skip entry."""
+
 
 
 def build_event_interpret_prompt(event_text: str, snapshot: dict) -> str:

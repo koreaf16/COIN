@@ -169,6 +169,18 @@ export class Executor {
     const currentPrice = this.ringBuffer.getLastPrice(signal.symbol);
     if (!currentPrice) return;
 
+    // [개선] 진입 전 최종 Conflict Detection (진입 직전 상황 재점검)
+    const marketData = await this._buildMarketData(signal.symbol);
+    const finalCheck = evaluateConditions(signal.entryConditions, marketData, signal.direction);
+    if (!finalCheck.met) {
+      const conflict = finalCheck.details.find(d => d.field === 'CONFLICT_FILTER');
+      if (conflict) {
+        this.stats.rejected++;
+        console.log(`[Z3-Exec] REJECTED by ConflictFilter: ${signal.symbol} ${conflict.reason}`);
+        return;
+      }
+    }
+
     // [Bug#5] 같은 심볼 동시 진입 방지 (race condition)
     if (this._pendingSymbols.has(signal.symbol)) {
       this.stats.rejected++;
@@ -192,7 +204,7 @@ export class Executor {
       console.log(`[Z3-Exec] REJECTED: ${check.reason}`);
       return;
     }
-
+    
     // ── 호가창 슬리피지 사전 체크 ──
     if (this.liveMode && this.binance.isReady()) {
       try {
@@ -365,10 +377,28 @@ export class Executor {
   }
 
   /** 시장 데이터 스냅샷 (stop_conditions 평가용) */
-  _buildMarketData(symbol) {
+  async _buildMarketData(symbol) {
     const snapshot = this.ringBuffer.getSnapshot(symbol);
     const deriv = snapshot.derivatives || {};
     const mark = snapshot.markPrice || {};
+
+    // DB에서 최신 OI Matrix 정보 가져오기
+    let price_dir_1h = 'FLAT';
+    let oi_dir_1h = 'FLAT';
+    try {
+      const { getPool: getDbPool } = await import('../shared/db.js');
+      const conn = await getDbPool().getConnection();
+      try {
+        const result = await conn.execute(
+          `SELECT price_dir, oi_dir FROM z1_oi_matrix WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY`,
+          { sym: symbol }
+        );
+        if (result.rows && result.rows.length > 0) {
+          [price_dir_1h, oi_dir_1h] = result.rows[0];
+        }
+      } finally { await conn.close(); }
+    } catch {}
+
     return {
       price: snapshot.price,
       funding_rate: mark.fundingRate || deriv.funding_rate || 0,
@@ -376,11 +406,13 @@ export class Executor {
       cvd_direction: 0,
       volume_surge: 1.0,
       macro_regime: 'neutral',
+      price_dir_1h,
+      oi_dir_1h,
     };
   }
 
   /** 100ms 루프: 가격 기반 청산 체크 + stop_conditions 평가 */
-  _monitorPositions() {
+  async _monitorPositions() {
     for (const [posId, position] of this.activePositions) {
       const currentPrice = this.ringBuffer.getLastPrice(position.symbol);
       if (!currentPrice) continue;
@@ -396,8 +428,8 @@ export class Executor {
         const now = Date.now();
         if (!position._lastStopCondCheck || now - position._lastStopCondCheck >= 5000) {
           position._lastStopCondCheck = now;
-          const marketData = this._buildMarketData(position.symbol);
-          const result = evaluateConditions(position.stopConditions, marketData);
+          const marketData = await this._buildMarketData(position.symbol);
+          const result = evaluateConditions(position.stopConditions, marketData, position.direction);
           if (result.met) {
             console.log(`[Z3-Exec] STOP_CONDITION met: ${position.symbol}`, result.details.map(d => `${d.field} ${d.operator} ${d.expected} (actual=${d.actual})`).join(', '));
             this._exitPosition(posId, currentPrice, 'STOP_CONDITION', result.details);

@@ -150,9 +150,30 @@ export class SmartExit {
       return 'MOMENTUM_REVERSAL';
     }
 
-    // ── 경로 5: 시간 손절 ──
+    // ── 경로 5: 동적 시간 손절 (Dynamic Time Stop) ──
+    // 변동성이 크면 승부가 빨리 나야 함. ATR이 높을수록 시간을 단축.
+    let dynamicTimeStopMin = position.timeStopMin || 15;
+    if (atr && entry > 0) {
+      const volRatio = (atr / entry) * 100; // 1m ATR %
+      if (volRatio > 0.5) dynamicTimeStopMin = Math.max(3, Math.round(dynamicTimeStopMin * 0.5));
+      else if (volRatio > 0.3) dynamicTimeStopMin = Math.max(5, Math.round(dynamicTimeStopMin * 0.7));
+    }
+
     const holdMin = (Date.now() - position.entryTime) / 60000;
-    if (position.timeStopMin && holdMin >= position.timeStopMin) return 'TIME_STOP';
+    if (holdMin >= dynamicTimeStopMin) {
+      console.log(`[Z3-Exit] DYNAMIC_TIME_STOP: ${position.symbol} ${holdMin.toFixed(1)}min exceeded (dynamic limit=${dynamicTimeStopMin}min, volRatio=${((atr/entry)*100).toFixed(3)}%)`);
+      return 'TIME_STOP';
+    }
+
+    // ── [신규] 경로 8: 긴급 탈출 (Emergency Exit — RIVERUSDT 교훈) ──
+    // 1. 진입 후 절반의 시간이 지났는데도 마이너스 수익권이며 반등 기미가 없을 때
+    if (holdMin > dynamicTimeStopMin * 0.5 && netPnlPct < -0.3) {
+      const isOppositeCandle = this._checkMomentumReversal(position.symbol, isLong);
+      if (isOppositeCandle) {
+        console.log(`[Z3-Exit] EMERGENCY_EXIT: No bounce detected after half-time. Market is too heavy.`);
+        return 'EMERGENCY_EXIT';
+      }
+    }
 
     return null;
   }

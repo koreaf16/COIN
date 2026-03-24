@@ -81,6 +81,12 @@ async def get_market_snapshot(symbol: str) -> dict:
         snapshot["bb_width"] = float(r[2] or 0)
 
     r = _query_one(
+        "SELECT volatility_acceleration FROM z1_market_states "
+        "WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY", {"sym": symbol})
+    if r:
+        snapshot["volatility_acceleration"] = float(r[0] or 1.0)
+
+    r = _query_one(
         "SELECT price_dir, oi_dir, interpretation FROM z1_oi_matrix "
         "WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY", {"sym": symbol})
     if r:
@@ -184,3 +190,34 @@ async def get_active_plans(symbol: str) -> list:
         "ORDER BY created_at DESC", {"sym": symbol})
     return [{"id": int(r[0]), "direction": r[1], "target_price": float(r[2]) if r[2] else None,
              "confidence": float(r[3]) if r[3] else None} for r in rows]
+
+
+async def get_recent_losses(symbol: str, limit: int = 3) -> list:
+    """최근 손실 사례 (RAG용)"""
+    rows = _query(
+        "SELECT direction, entry_price, exit_price, pnl_pct, exit_reason, entry_reasoning "
+        "FROM z4_positions WHERE symbol = :sym AND pnl_pct < -0.5 "
+        "ORDER BY entry_time DESC FETCH FIRST :limit ROWS ONLY",
+        {"sym": symbol, "limit": limit})
+    
+    losses = []
+    for r in rows:
+        import json
+        reasoning = r[5]
+        if hasattr(reasoning, 'read'):
+            reasoning = reasoning.read()
+        try:
+            if isinstance(reasoning, str):
+                reasoning = json.loads(reasoning)
+            reasoning_text = reasoning.get('reasoning', '')
+        except:
+            reasoning_text = str(reasoning)
+
+        losses.append({
+            "direction": r[0],
+            "pnl": float(r[3]),
+            "exit_reason": r[4],
+            "reasoning": reasoning_text[:200] # 길면 자름
+        })
+    return losses
+

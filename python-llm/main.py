@@ -158,12 +158,13 @@ async def scenario(req: ScenarioRequest):
     """매 4시간: 시나리오 + 진입 조건 세팅 (클라우드)"""
     snapshot = await get_market_snapshot(req.symbol)
     similar = await get_similar_states(req.symbol)
+    recent_losses = await get_recent_losses(req.symbol)
 
     # 최신 브리핑 가져오기
     briefing_data = await get_recent_briefing(req.symbol) or {}
 
     prompt = build_scenario_prompt(snapshot, briefing_data or {}, similar, req.event_calendar,
-                                  req.fear_greed, req.stablecoin)
+                                  req.fear_greed, req.stablecoin, recent_losses)
     async with claude_semaphore:
         text, ms, tokens = await generate(prompt, SYSTEM_PROMPT, 2000, "scenario")
     result = parse_json_response(text)
@@ -183,9 +184,17 @@ async def unified_plan(req: UnifiedPlanRequest):
     all_snapshots = await get_all_symbols_snapshot(req.symbols)
     macro = await get_macro_snapshot()
 
+    # 각 심볼별 최근 손실 사례 수집
+    recent_losses = {}
+    for sym in req.symbols:
+        losses = await get_recent_losses(sym, limit=2)
+        if losses:
+            recent_losses[sym] = losses
+
     prompt = build_unified_plan_prompt(
-        all_snapshots, macro, req.event_calendar, req.fear_greed, req.stablecoin
+        all_snapshots, macro, req.event_calendar, req.fear_greed, req.stablecoin, recent_losses
     )
+
 
     # provider 선택: deepseek(기본) 또는 cloud(Claude)
     route = req.provider

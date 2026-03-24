@@ -60,12 +60,12 @@ export class StateVectorBuilder {
     const conn = await getPool().getConnection();
     try {
       // Z1 파생 테이블 계산 + 저장 (oracle_reader가 읽을 수 있도록 먼저 수행)
-      await this._computeAndSaveVolatilityRegime(conn, symbol);
+      const volAcc = await this._computeAndSaveVolatilityRegime(conn, symbol);
       await this._computeAndSaveOIMatrix(conn, symbol);
 
       // [0] 변동성 레짐
       const volRegime = await this._getVolatilityRegime(conn, symbol);
-
+      
       // [1] 추세 강도 (EMA 12/26 기반)
       const trendStrength = await this._getTrendStrength(conn, symbol);
 
@@ -101,9 +101,9 @@ export class StateVectorBuilder {
         `INSERT INTO z1_market_states
          (symbol, ts, state_vector, volatility_regime, trend_strength,
           funding_zscore, oi_change_pct, cvd_direction, macro_regime,
-          sentiment_score, exchange_netflow, liq_asymmetry)
+          sentiment_score, exchange_netflow, liq_asymmetry, volatility_acceleration)
          VALUES (:symbol, SYSTIMESTAMP, :vec,
-                 :volReg, :trend, :fzs, :oiChg, :cvd, :macro, :sent, :netflow, :liqAsym)`,
+                 :volReg, :trend, :fzs, :oiChg, :cvd, :macro, :sent, :netflow, :liqAsym, :volAcc)`,
         {
           symbol,
           vec: { type: oracledb.DB_TYPE_VECTOR, val: vector },
@@ -116,6 +116,7 @@ export class StateVectorBuilder {
           sent: sentimentScore,
           netflow: exchangeNetflow,
           liqAsym: liqAsymmetry,
+          volAcc: volAcc || 0
         },
         { autoCommit: true }
       );
@@ -132,24 +133,39 @@ export class StateVectorBuilder {
       `SELECT high_price, low_price, close_price FROM (
          SELECT high_price, low_price, close_price FROM z0_price_ohlcv
          WHERE symbol = :sym AND timeframe = '1h'
-         ORDER BY ts DESC FETCH FIRST 21 ROWS ONLY
+         ORDER BY ts DESC FETCH FIRST 31 ROWS ONLY
        ) ORDER BY ROWNUM`,
       { sym: symbol }
     );
     const candles = result.rows || [];
-    if (candles.length < 2) return;
+    if (candles.length < 2) return 0;
 
-    // ATR(14)
-    const trueRanges = [];
-    for (let i = 1; i < candles.length; i++) {
-      const [high, low] = candles[i];
-      const prevClose = candles[i - 1][2];
-      trueRanges.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+    // ATR(14) 시계열 계산 (가속도 측정을 위해 최근 10개의 ATR 확보)
+    const atrs = [];
+    const closes = candles.map(c => c[2]);
+    
+    for (let j = 0; j <= Math.min(10, candles.length - 15); j++) {
+      const slice = candles.slice(j, j + 15); // i-14 ~ i
+      const trueRanges = [];
+      for (let i = 1; i < slice.length; i++) {
+        const [high, low] = slice[i];
+        const prevClose = slice[i - 1][2];
+        trueRanges.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+      }
+      atrs.push(trueRanges.reduce((s, v) => s + v, 0) / trueRanges.length);
     }
-    const atr14 = trueRanges.slice(-14).reduce((s, v) => s + v, 0) / Math.min(14, trueRanges.length);
+    // atrs[last]가 가장 최신 ATR
+
+    const atr14 = atrs[atrs.length - 1];
+    
+    // 변동성 가속도 (Volatility Acceleration): 현재 ATR / 최근 10개 ATR 평균
+    let volAcc = 1.0;
+    if (atrs.length > 1) {
+      const avgAtr = atrs.slice(0, -1).reduce((s, v) => s + v, 0) / (atrs.length - 1);
+      volAcc = avgAtr > 0 ? atr14 / avgAtr : 1.0;
+    }
 
     // Bollinger Band width (20기간)
-    const closes = candles.map(c => c[2]);
     const bbPeriod = Math.min(20, closes.length);
     const sma = closes.slice(-bbPeriod).reduce((s, v) => s + v, 0) / bbPeriod;
     const std = Math.sqrt(closes.slice(-bbPeriod).reduce((s, v) => s + (v - sma) ** 2, 0) / bbPeriod);
@@ -170,6 +186,8 @@ export class StateVectorBuilder {
     } catch (err) {
       if (!err.message?.includes('ORA-00001')) throw err;
     }
+    
+    return volAcc;
   }
 
   /** OI 방향 + 가격 방향 → z1_oi_matrix INSERT */
