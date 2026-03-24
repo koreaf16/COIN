@@ -34,6 +34,7 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<any> | null>(null);
   const prevCountRef = useRef(0);
   const linesCreatedRef = useRef(false);
+  const inflightRef = useRef(false); // 동시 fetch 방지
 
   // 차트 초기화 (1회)
   useEffect(() => {
@@ -119,11 +120,24 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
     });
     ro.observe(containerRef.current);
 
-    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      // 모든 ref 정리 — 언마운트 후 stale ref 접근 방지
+      chartRef.current = null;
+      candleRef.current = null;
+      volumeRef.current = null;
+      entryLineSeriesRef.current = null;
+      targetLineSeriesRef.current = null;
+      stopLineSeriesRef.current = null;
+      exitLineSeriesRef.current = null;
+      markersPluginRef.current = null;
+    };
   }, []);
 
   // 데이터 폴링
   useEffect(() => {
+    let cancelled = false;
     prevCountRef.current = 0;
     linesCreatedRef.current = false;
 
@@ -140,23 +154,34 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
       : 300;
 
     const fetchCandles = async () => {
+      if (inflightRef.current) return; // 이전 fetch 진행 중이면 스킵
+      inflightRef.current = true;
       try {
         const res = await fetch(`/api/coin/candles-1s/${symbol}?seconds=${neededSeconds}`);
-        if (!res.ok) return;
+        if (cancelled || !res.ok) return;
         const data = await res.json();
+        if (cancelled) return;
+
         const raw = data.candles || [];
         if (!raw.length) return;
 
-        const candles = raw.map((c: any) => ({
-          time: (c.time + tzOffset) as any,
-          open: c.open, high: c.high, low: c.low, close: c.close,
-        }));
+        const candles = raw
+          .map((c: any) => ({
+            time: (Math.floor(Number(c.time)) + tzOffset) as any,
+            open: c.open, high: c.high, low: c.low, close: c.close,
+          }))
+          .filter((c: any) => isFinite(c.time));
 
-        const volumes = raw.map((c: any) => ({
-          time: (c.time + tzOffset) as any,
-          value: c.volume,
-          color: c.close >= c.open ? 'rgba(0,166,80,0.3)' : 'rgba(159,64,61,0.3)',
-        }));
+        const volumes = raw
+          .map((c: any) => ({
+            time: (Math.floor(Number(c.time)) + tzOffset) as any,
+            value: c.volume ?? 0,
+            color: c.close >= c.open ? 'rgba(0,166,80,0.3)' : 'rgba(159,64,61,0.3)',
+          }))
+          .filter((c: any) => isFinite(c.time));
+
+        if (!candles.length) return;
+        if (cancelled) return;
 
         const firstTime = candles[0].time;
         const lastTime = candles[candles.length - 1].time;
@@ -200,7 +225,7 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
           const isLong = direction === 'LONG';
 
           // 진입 마커
-          if (entryTime && candleRef.current) {
+          if (entryTime) {
             const entryTimeET = entryTime + tzOffset;
             let markerTime = candles[0].time;
             let minDiff = Infinity;
@@ -224,7 +249,7 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
           }
 
           // 청산 마커
-          if (exitTime && candleRef.current) {
+          if (exitTime) {
             const exitTimeET = exitTime + tzOffset;
             let markerTime = candles[candles.length - 1].time;
             let minDiff = Infinity;
@@ -281,12 +306,19 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
         }
 
         prevCountRef.current = candles.length;
-      } catch {}
+      } catch (err) {
+        if (!cancelled) console.error('[Candle1sChart] fetch error:', err);
+      } finally {
+        inflightRef.current = false;
+      }
     };
 
     fetchCandles();
     const timer = setInterval(fetchCandles, 1000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [symbol, entryPrice, entryTime, exitPrice, exitTime, targetPrice, safetyStop, direction]);
 
   return <div ref={containerRef} className="w-full h-full" />;

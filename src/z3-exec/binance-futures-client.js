@@ -237,7 +237,9 @@ export class BinanceFuturesClient {
     const step = info.stepSize;
     const rounded = Math.floor(qty / step) * step;
     const decimals = this._countDecimals(step);
-    return parseFloat(rounded.toFixed(decimals));
+    const result = parseFloat(rounded.toFixed(decimals));
+    // stepSize floor 후 0이 되는 경우 방지 (minQty 보장)
+    return Math.max(result, info.minQty);
   }
 
   _roundPrice(symbol, price) {

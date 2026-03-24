@@ -114,6 +114,7 @@ const llmScheduler = new LLMScheduler(newsCollector, symbols, {
   economicCalendar,
   fearGreedCollector,
   stablecoinCollector,
+  ringBuffer,
 });
 const eventMonitor = new EventMonitor(newsCollector, ringBuffer, { symbols });
 const ruleEngine = new RuleEngine(ringBuffer, macroCollector, symbols);

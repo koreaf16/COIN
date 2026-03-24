@@ -13,9 +13,14 @@ def init_pool():
         return
     if ORACLE_INSTANT_CLIENT_PATH:
         oracledb.init_oracle_client(lib_dir=ORACLE_INSTANT_CLIENT_PATH)
+
+    def _session_cb(conn, requested_tag):
+        conn.cursor().execute("ALTER SESSION SET TIME_ZONE = 'UTC'")
+
     _pool = oracledb.create_pool(
         user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_CONNECT_STRING,
         min=1, max=5,
+        session_callback=_session_cb,
     )
 
 
@@ -43,13 +48,17 @@ async def get_market_snapshot(symbol: str) -> dict:
     """심볼의 현재 시장 스냅샷"""
     snapshot = {}
 
-    r = _query_one(
-        "SELECT close_price, volume, ts FROM z0_price_ohlcv "
-        "WHERE symbol = :sym AND timeframe = '1m' ORDER BY ts DESC FETCH FIRST 1 ROW ONLY",
+    rows = _query(
+        "SELECT close_price, volume FROM z0_price_ohlcv "
+        "WHERE symbol = :sym AND timeframe = '1m' ORDER BY ts DESC FETCH FIRST 6 ROWS ONLY",
         {"sym": symbol})
-    if r:
-        snapshot["price"] = float(r[0])
-        snapshot["volume_1m"] = float(r[1])
+    if rows:
+        snapshot["price"] = float(rows[0][0])
+        snapshot["volume_1m"] = float(rows[0][1])
+        if len(rows) >= 2:
+            avg_vol = sum(float(r[1] or 0) for r in rows[1:]) / (len(rows) - 1)
+            latest_vol = float(rows[0][1] or 0)
+            snapshot["volume_surge"] = round(latest_vol / avg_vol, 2) if avg_vol > 0 else 1.0
 
     r = _query_one(
         "SELECT open_interest, oi_change_pct, funding_rate, predicted_rate, "
@@ -67,10 +76,14 @@ async def get_market_snapshot(symbol: str) -> dict:
         snapshot["liq_short_24h"] = float(r[7] or 0)
 
     r = _query_one(
-        "SELECT cvd FROM z0_price_ohlcv WHERE symbol = :sym AND timeframe = '1h' "
+        "SELECT cvd, volume FROM z0_price_ohlcv WHERE symbol = :sym AND timeframe = '1h' "
         "ORDER BY ts DESC FETCH FIRST 1 ROW ONLY", {"sym": symbol})
     if r:
-        snapshot["cvd_1h"] = float(r[0] or 0)
+        cvd_raw = float(r[0] or 0)
+        vol_1h = float(r[1] or 0)
+        snapshot["cvd_1h"] = cvd_raw
+        # cvd / volume = (buyVol - sellVol) / totalVol → -1.0 ~ +1.0 (rule engine cvd_direction과 동일 스케일)
+        snapshot["cvd_direction"] = round(cvd_raw / vol_1h, 3) if vol_1h > 0 else 0.0
 
     r = _query_one(
         "SELECT regime, atr_14, bb_width FROM z1_volatility_regime "
@@ -119,18 +132,20 @@ async def get_all_symbols_snapshot(symbols: list[str]) -> dict:
             continue
 
         # [최적화 4] Prompt Compression: 핵심 지표 위주로 필드 압축
+        # [최적화 5] Float 정밀도 축소 + 불필요 필드(v_1m, atr) 제거 → 토큰 절감
+        # [BugFix] DOGE 등 저가 코인을 위해 가격 정밀도를 2 -> 5자리로 상향
         compressed = {
-            "p": snap["price"],
-            "v_1m": snap.get("volume_1m", 0),
-            "oi_pct": snap.get("oi_change_pct", 0),
-            "fr": snap.get("funding_rate", 0),
-            "cvd_1h": snap.get("cvd_1h", 0),
+            "p": round(snap["price"], 5),
+            "oi_pct": round(snap.get("oi_change_pct", 0), 4),
+            "fr": round(snap.get("funding_rate", 0), 6),
+            "cvd_dir": round(snap.get("cvd_direction", 0), 3),
+            "v_surge": round(snap.get("volume_surge", 1.0), 2),
             "vol_r": snap.get("volatility_regime", "MED"),
-            "atr": snap.get("atr_14", 0),
+            "vol_acc": round(snap.get("volatility_acceleration", 1.0), 3),
             "oi_mat": snap.get("oi_matrix", {}).get("interpretation", "N/A"),
             "liq": [
-                {"p": l["price"], "v": l["long_usd"] + l["short_usd"]} 
-                for l in snap.get("top_liquidation_levels", [])[:2] # 상위 2개만
+                {"p": round(l["price"], 5), "v": round(l["long_usd"] + l["short_usd"], 0)}
+                for l in snap.get("top_liquidation_levels", [])[:2]
             ]
         }
         result[sym] = compressed

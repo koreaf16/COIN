@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { createChart, CandlestickSeries, HistogramSeries, ColorType, type IChartApi, type ISeriesApi, createSeriesMarkers } from 'lightweight-charts';
+import { createChart, CandlestickSeries, HistogramSeries, ColorType, type IChartApi, type ISeriesApi, createSeriesMarkers, type ISeriesMarkersPluginApi } from 'lightweight-charts';
 
 interface Kline {
   ts: string;
@@ -32,6 +32,7 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const entryLineRef = useRef<any>(null); // 진입가 라인 참조 (중복 방지)
+  const markersPluginRef = useRef<ISeriesMarkersPluginApi<any> | null>(null); // 마커 플러그인 (1회 생성, 재사용)
   const focusAppliedRef = useRef(false);  // 포커스 1회만 적용
 
   useEffect(() => {
@@ -81,6 +82,9 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
       scaleMargins: { top: 0.8, bottom: 0 },
     });
 
+    // 마커 플러그인 1회 생성 — 이후 setMarkers로 재사용
+    markersPluginRef.current = createSeriesMarkers(candleSeries, []);
+
     chartRef.current = chart;
     candleRef.current = candleSeries;
     volumeRef.current = volumeSeries;
@@ -95,7 +99,15 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
     });
     ro.observe(containerRef.current);
 
-    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candleRef.current = null;
+      volumeRef.current = null;
+      entryLineRef.current = null;
+      markersPluginRef.current = null;
+    };
   }, []);
 
   // symbol/timeframe/entryFocus 변경 시 포커스 플래그 리셋
@@ -106,9 +118,12 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
       try { candleRef.current.removePriceLine(entryLineRef.current); } catch {}
       entryLineRef.current = null;
     }
+    // 이전 마커 초기화 — 누적 방지
+    markersPluginRef.current?.setMarkers([]);
   }, [symbol, timeframe, entryFocus]);
 
   useEffect(() => {
+    let cancelled = false;
     const tfMap: Record<string, string> = { '1M': '1m', '5M': '5m', '15M': '15m', '1H': '1h', '4H': '4h' };
     const tf = tfMap[timeframe] || '1m';
     const tzOffset = getETOffsetSec();
@@ -116,23 +131,30 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
     const loadData = async () => {
       try {
         const res = await fetch(`/api/coin/klines/${symbol}?timeframe=${tf}&limit=200`);
-        if (!res.ok) return;
+        if (cancelled || !res.ok) return;
         const klines: Kline[] = await res.json();
+        if (cancelled) return;
         if (!klines.length) return;
 
-        const candles = klines.map(k => ({
-          time: (Math.floor(new Date(k.ts).getTime() / 1000) + tzOffset) as any,
-          open: k.open_price,
-          high: k.high_price,
-          low: k.low_price,
-          close: k.close_price,
-        }));
+        const candles = klines
+          .map(k => {
+            const t = Math.floor(new Date(k.ts).getTime() / 1000);
+            return { time: (t + tzOffset) as any, open: k.open_price, high: k.high_price, low: k.low_price, close: k.close_price };
+          })
+          .filter(c => isFinite(c.time));
 
-        const volumes = klines.map(k => ({
-          time: (Math.floor(new Date(k.ts).getTime() / 1000) + tzOffset) as any,
-          value: k.volume,
-          color: k.close_price >= k.open_price ? 'rgba(0,166,80,0.3)' : 'rgba(159,64,61,0.3)',
-        }));
+        const volumes = klines
+          .map(k => {
+            const t = Math.floor(new Date(k.ts).getTime() / 1000);
+            return {
+              time: (t + tzOffset) as any,
+              value: k.volume ?? 0,
+              color: k.close_price >= k.open_price ? 'rgba(0,166,80,0.3)' : 'rgba(159,64,61,0.3)',
+            };
+          })
+          .filter(c => isFinite(c.time));
+
+        if (!candles.length) return;
 
         candleRef.current?.setData(candles);
         volumeRef.current?.setData(volumes);
@@ -159,28 +181,37 @@ export function CandleChart({ symbol, timeframe, entryFocus }: Props) {
               axisLabelVisible: true,
               title: `진입 $${entryFocus.entryPrice}`,
             });
-          } catch {}
+          } catch (err) {
+            console.error('[CandleChart] createPriceLine error:', err);
+          }
 
-          // 진입 시점 마커 (1회)
+          // 진입 시점 마커 (플러그인 재사용 — 누적 방지)
           try {
             const entryTs = Math.floor(entryLocal / 60) * 60;
             const etTime = new Date(entryFocus.entryTime * 1000)
               .toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit' });
-            createSeriesMarkers(candleRef.current, [{
+            markersPluginRef.current?.setMarkers([{
               time: entryTs as any,
               position: 'belowBar',
               color: '#2962FF',
               shape: 'arrowUp',
               text: `진입 ${etTime} ET`,
             }]);
-          } catch {}
+          } catch (err) {
+            console.error('[CandleChart] setMarkers error:', err);
+          }
         }
-      } catch {}
+      } catch (err) {
+        if (!cancelled) console.error('[CandleChart] loadData error:', err);
+      }
     };
 
     loadData();
     const timer = setInterval(loadData, 10000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [symbol, timeframe, entryFocus]);
 
   return <div ref={containerRef} className="w-full h-full" />;

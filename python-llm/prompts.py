@@ -180,52 +180,44 @@ DEEPSEEK_UNIFIED_PLAN_SYSTEM = """You are an expert crypto derivatives trading a
 You analyze market data and produce structured JSON outputs.
 
 RULES:
-1. Always include specific numerical values from the data in your reasoning
-2. Output ONLY valid JSON (no markdown, no explanation outside JSON)
-3. Include a "confidence" field (0.0-1.0) in every response
-4. If data is insufficient, set confidence below 0.5
-5. Never hallucinate numbers — only reference values provided in the input
-6. CRITICAL: Write ALL "reasoning", "summary", "explanation" fields in Korean (한국어).
-   Include specific data values in Korean text. Example: "펀딩비 -0.0005로 숏 과밀, OI 2.3% 감소로 매도 압력 확인"
-   NEVER write reasoning in English.
+1. Output ONLY valid JSON (no markdown, no explanation outside JSON)
+2. Include a "confidence" field (0.0-1.0) in every response
+3. If data is insufficient, set confidence below 0.5
+4. Never hallucinate numbers — only reference values provided in the input
 
-TASK: Generate ONE execution plan per symbol for ALL provided symbols.
+TASK: Determine the better direction (LONG or SHORT) for the symbol and set entry conditions.
 
 PLAN RULES:
-1. Generate exactly ONE plan for EVERY symbol — no symbol may be skipped.
-2. For each symbol determine the better direction (LONG or SHORT) based on data.
+1. Always output LONG or SHORT. Use SKIP only when data is completely missing or contradictory signals cancel out.
+2. entry_conditions must require a trigger NOT already satisfied at current market state.
+   - Bad: price <= current_price (already true — triggers immediately)
+   - Good: cvd_direction > 0.5, oi_change_pct > 0.01, volume_surge > 1.5
 3. target_price must be realistic based on ATR — do NOT set unreachable targets
 4. Risk:Reward (target distance / stop distance) >= 1.5
-5. Cross-symbol logic: if BTC is bearish, prefer SHORT on weaker alts
-6. stop_conditions: Provide logical invalidation rules (e.g., if funding_rate or cvd_direction reverses)
-7. CRITICAL TIMING: Plans expire in 5 minutes. Entry conditions MUST be achievable within 5 minutes at current market speed.
-   - Do NOT set price conditions far from current price. Keep entry_price within ±0.3% of current price.
-   - Focus on non-price conditions (funding_rate, cvd_direction, oi_change_pct, volume_surge) that can trigger quickly.
-   - If no clear setup exists, set entry near current price with tight stop — the system will extend unchanged plans automatically.
+5. stop_conditions: logical invalidation rules (e.g., funding_rate or cvd_direction reverses)
 
 Operators: "<", ">", "<=", ">=", "==", "in"
-Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio)
+Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio, see v_surge in data), volatility_acceleration (float, current ATR / 10-bar avg ATR; >1.2 = expanding, <0.8 = contracting, see vol_acc in data)
 
 Output JSON:
 {
   "plans": [
     {
       "symbol": "<SYMBOL>",
-      "direction": "<LONG|SHORT>",
+      "direction": "<LONG|SHORT|SKIP>",
       "entry_conditions": {
-        "price": {"op": "<=", "value": 68000},
-        "funding_rate": {"op": "<", "value": 0.0001}
+        "volume_surge": {"op": ">", "value": 2.0},
+        "cvd_direction": {"op": ">", "value": 0.5}
       },
-      "target_price": "<number - REQUIRED, realistic based on ATR>",
-      "stop_price": "<number - REQUIRED, invalidation level>",
+      "target_price": "<number - REQUIRED for LONG/SHORT>",
+      "stop_price": "<number - REQUIRED for LONG/SHORT>",
       "stop_conditions": {
-        "funding_rate": {"op": ">", "value": 0.0005}
+        "cvd_direction": {"op": "<", "value": 0.0}
       },
       "time_stop_min": "<int>",
-      "reasoning": "<한국어 — 반드시 구체적 수치, 크로스심볼 비교, 목표가/손절가 근거 포함>"
+      "reasoning": "<English, max 100 chars: key signal + target/stop basis>"
     }
   ],
-  "market_summary": "<한국어 1-2문장 전체 시장 요약>",
   "confidence": "<0-1>"
 }"""
 
@@ -235,23 +227,28 @@ def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
                               fear_greed: dict | None = None,
                               stablecoin: dict | None = None,
                               recent_losses: dict | None = None) -> str:
-    """유저 메시지 = 동적 데이터만 (정적 규칙은 시스템 프롬프트에 포함)"""
-    symbols_text = json.dumps(all_snapshots, indent=2, default=str)
-    macro_text = json.dumps(macro, indent=2, default=str) if macro else "N/A"
-    cal_text = json.dumps(event_calendar, indent=2) if event_calendar else "None"
-    fg_text = json.dumps(fear_greed, indent=2) if fear_greed else "N/A"
-    sc_text = json.dumps(stablecoin, indent=2) if stablecoin else "N/A"
-    loss_text = json.dumps(recent_losses, indent=2) if recent_losses else "None"
+    """유저 메시지 = 동적 데이터만 (정적 규칙은 시스템 프롬프트에 포함)
+    [최적화] 공통 데이터(MACRO/EVENTS/...)를 앞에 배치 → DeepSeek 프리픽스 캐시 히트 극대화
+    [최적화] indent 제거, compact JSON → 토큰 절감
+    """
+    _compact = lambda obj: json.dumps(obj, separators=(',', ':'), default=str)
 
-    return f"""SYMBOLS DATA (each key = symbol):
-{symbols_text}
+    macro_text = _compact(macro) if macro else "N/A"
+    cal_text = _compact(event_calendar) if event_calendar else "None"
+    fg_text = _compact(fear_greed) if fear_greed else "N/A"
+    sc_text = _compact(stablecoin) if stablecoin else "N/A"
+    symbols_text = _compact(all_snapshots)
+    loss_text = _compact(recent_losses) if recent_losses else "None"
 
-MACRO: {macro_text}
+    return f"""MACRO: {macro_text}
 EVENTS_24H: {cal_text}
 FEAR_GREED: {fg_text}
 STABLECOIN: {sc_text}
 
-RELEVANT_RECENT_LOSSES (RAG):
+SYMBOL DATA:
+{symbols_text}
+
+RECENT_LOSSES:
 {loss_text}
 
 CRITICAL: Analyze recent losses. If current market speed (volatility_acceleration) or OI-Price patterns match those losses, set higher confidence bars or skip entry."""

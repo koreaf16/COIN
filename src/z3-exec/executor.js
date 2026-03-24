@@ -53,6 +53,7 @@ export class Executor {
     this._pendingSymbols = new Set(); // [Bug#5] 동시 진입 race condition 방지
     this._exchangePositionsCache = null;   // Binance 포지션 캐시
     this._exchangePositionsCacheTs = 0;    // 캐시 시간
+    this._monitorRunning = false; // 모니터링 루프 동시 실행 방지
     this._monitorTimer = null;
     this._syncTimer = null;
     this.stats = { signals: 0, entries: 0, exits: 0, rejected: 0 };
@@ -170,8 +171,9 @@ export class Executor {
     if (!currentPrice) return;
 
     // [개선] 진입 전 최종 Conflict Detection (진입 직전 상황 재점검)
+    // signal.entryConditions 미포함 → {} 사용: conflict filter만 실행 (조건 재평가 아님)
     const marketData = await this._buildMarketData(signal.symbol);
-    const finalCheck = evaluateConditions(signal.entryConditions, marketData, signal.direction);
+    const finalCheck = evaluateConditions({}, marketData, signal.direction);
     if (!finalCheck.met) {
       const conflict = finalCheck.details.find(d => d.field === 'CONFLICT_FILTER');
       if (conflict) {
@@ -382,7 +384,7 @@ export class Executor {
     const deriv = snapshot.derivatives || {};
     const mark = snapshot.markPrice || {};
 
-    // DB에서 최신 OI Matrix 정보 가져오기
+    // DB에서 최신 OI Matrix 가져오기
     let price_dir_1h = 'FLAT';
     let oi_dir_1h = 'FLAT';
     try {
@@ -399,13 +401,30 @@ export class Executor {
       } finally { await conn.close(); }
     } catch {}
 
+    // 실시간 CVD 방향 (60초)
+    const recentTrades = this.ringBuffer.getTradesWindow(symbol, 60);
+    let buyVol = 0, sellVol = 0;
+    for (const t of recentTrades) {
+      if (t.isBuyerMaker) sellVol += t.qty;
+      else buyVol += t.qty;
+    }
+    const totalVol = buyVol + sellVol;
+    const cvd_direction = totalVol > 0 ? (buyVol - sellVol) / totalVol : 0;
+
+    // 볼륨 서지 (60초 vs 300초 평균)
+    const trades5m = this.ringBuffer.getTradesWindow(symbol, 300);
+    let vol5m = 0;
+    for (const t of trades5m) vol5m += t.qty;
+    const avgVol1m = trades5m.length > 0 ? (vol5m / 5) : 1;
+    const volume_surge = avgVol1m > 0 ? totalVol / avgVol1m : 1.0;
+
     return {
       price: snapshot.price,
       funding_rate: mark.fundingRate || deriv.funding_rate || 0,
       oi_change_pct: deriv.oi_change_pct || 0,
-      cvd_direction: 0,
-      volume_surge: 1.0,
-      macro_regime: 'neutral',
+      cvd_direction,
+      volume_surge,
+      macro_regime: 'neutral', // Executor는 macroCollector 미보유
       price_dir_1h,
       oi_dir_1h,
     };
@@ -413,6 +432,9 @@ export class Executor {
 
   /** 100ms 루프: 가격 기반 청산 체크 + stop_conditions 평가 */
   async _monitorPositions() {
+    if (this._monitorRunning) return;
+    this._monitorRunning = true;
+    try {
     for (const [posId, position] of this.activePositions) {
       const currentPrice = this.ringBuffer.getLastPrice(position.symbol);
       if (!currentPrice) continue;
@@ -429,13 +451,17 @@ export class Executor {
         if (!position._lastStopCondCheck || now - position._lastStopCondCheck >= 5000) {
           position._lastStopCondCheck = now;
           const marketData = await this._buildMarketData(position.symbol);
-          const result = evaluateConditions(position.stopConditions, marketData, position.direction);
+          // direction=null: CONFLICT_FILTER는 진입 차단 전용, 청산 조건엔 적용 금지
+          const result = evaluateConditions(position.stopConditions, marketData, null);
           if (result.met) {
             console.log(`[Z3-Exec] STOP_CONDITION met: ${position.symbol}`, result.details.map(d => `${d.field} ${d.operator} ${d.expected} (actual=${d.actual})`).join(', '));
             this._exitPosition(posId, currentPrice, 'STOP_CONDITION', result.details);
           }
         }
       }
+    }
+    } finally {
+      this._monitorRunning = false;
     }
   }
 
@@ -492,11 +518,12 @@ export class Executor {
       // PnL 계산
       const isLong = position.direction === 'LONG';
       const dir = isLong ? 1 : -1;
-      const pnlPct = dir * ((exitPrice - position.entryPrice) / position.entryPrice) * 100;
       const feeRate = 0.0008; // 왕복 0.08%
       const feeTotal = position.qty * position.entryPrice * feeRate;
       const pnlGross = dir * (exitPrice - position.entryPrice) * position.qty;
       const pnlNet = pnlGross - feeTotal;
+      const marginUsed = position.qty * position.entryPrice / this.leverage;
+      const pnlPct = marginUsed > 0 ? (pnlNet / marginUsed) * 100 : 0;
       const holdTimeSec = (Date.now() - position.entryTime) / 1000;
 
       console.log(
@@ -596,10 +623,11 @@ export class Executor {
 
       const isLong = position.direction === 'LONG';
       const dir = isLong ? 1 : -1;
-      const pnlPct = dir * ((exitPrice - position.entryPrice) / position.entryPrice) * 100;
       const feeRate = 0.0008;
       const feeTotal = partialQty * position.entryPrice * feeRate;
       const pnlNet = dir * (exitPrice - position.entryPrice) * partialQty - feeTotal;
+      const marginUsed = partialQty * position.entryPrice / this.leverage;
+      const pnlPct = marginUsed > 0 ? (pnlNet / marginUsed) * 100 : 0;
 
       if (!this.liveMode) this.balance += pnlNet;
 

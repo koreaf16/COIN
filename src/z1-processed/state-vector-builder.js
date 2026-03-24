@@ -383,7 +383,7 @@ export class StateVectorBuilder {
     try {
       // next_1h_return이 null이고 ts가 1시간 이상 지난 레코드만
       const rows = await conn.execute(
-        `SELECT id, symbol, ts FROM z1_market_states
+        `SELECT symbol, ts FROM z1_market_states
          WHERE next_1h_return IS NULL AND ts < CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '1' HOUR
          FETCH FIRST 200 ROWS ONLY`,
         {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
@@ -405,8 +405,8 @@ export class StateVectorBuilder {
                  next_1h_return  = :r1h,
                  next_4h_return  = CASE WHEN :r4h  IS NOT NULL THEN :r4h2  ELSE next_4h_return  END,
                  next_24h_return = CASE WHEN :r24h IS NOT NULL THEN :r24h2 ELSE next_24h_return END
-               WHERE id = :id`,
-              { r1h, r4h, r4h2: r4h, r24h, r24h2: r24h, id: row.ID },
+               WHERE symbol = :sym AND ts = :ts`,
+              { r1h, r4h, r4h2: r4h, r24h, r24h2: r24h, sym, ts },
               { autoCommit: true }
             );
           }

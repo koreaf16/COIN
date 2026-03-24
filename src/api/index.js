@@ -226,9 +226,9 @@ export class ApiServer {
             // 먼지 포지션 필터 ($0.01 미만 notional — 테스트넷 소량 포지션 허용)
             if (exPos.qty * exPos.markPrice < 0.01) continue;
             const currentPrice = this.ringBuffer?.getLastPrice(exPos.symbol) || exPos.markPrice;
-            const dir = exPos.side === 'LONG' ? 1 : -1;
-            const pnlPct = dir * ((currentPrice - exPos.entryPrice) / exPos.entryPrice) * 100;
             const pnlUsd = exPos.unrealizedPnl; // Binance 미실현 손익 직접 사용
+            const marginUsed = exPos.leverage ? exPos.qty * exPos.entryPrice / exPos.leverage : 0;
+            const pnlPct = marginUsed > 0 ? (pnlUsd / marginUsed) * 100 : 0;
 
             // executor 메모리에서 메타데이터 보강 (planId, target, stop 등)
             const meta = [...(this.executor.activePositions?.values() || [])]
@@ -273,8 +273,9 @@ export class ApiServer {
         for (const [posId, pos] of this.executor.activePositions) {
           const currentPrice = this.ringBuffer?.getLastPrice(pos.symbol) || pos.entryPrice;
           const dir = pos.direction === 'LONG' ? 1 : -1;
-          const pnlPct = dir * ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
           const pnlUsd = dir * (currentPrice - pos.entryPrice) * pos.qty;
+          const marginUsed = pos.qty * pos.entryPrice / (this.executor?.leverage || 5);
+          const pnlPct = marginUsed > 0 ? (pnlUsd / marginUsed) * 100 : 0;
           const holdTimeMin = (Date.now() - pos.entryTime) / 60000;
 
           totalPnl += pnlUsd;
@@ -336,8 +337,10 @@ export class ApiServer {
           // 만료된 플랜 제외
           if (timeRemainingMin <= 0) continue;
 
-          const currentData = this.ruleEngine?._getCurrentData(symbol) || { price: this.ringBuffer?.getLastPrice(symbol) };
-          const evalResult = evaluateConditions(entryConditions, currentData);
+          const currentData = this.ruleEngine
+            ? await this.ruleEngine._getCurrentData(symbol)
+            : { price: this.ringBuffer?.getLastPrice(symbol) };
+          const evalResult = evaluateConditions(entryConditions, currentData, row.DIRECTION);
 
           // 진입 조건가 추출 (entry_conditions.price.value)
           const entryPrice = entryConditions?.price?.value || null;
@@ -412,7 +415,7 @@ export class ApiServer {
                   target_price, stop_price, stop_conditions, time_stop_min,
                   confidence, reasoning, scenario_id, status, triggered_at
            FROM z2_execution_plan WHERE id = :id`,
-          { id: Number(id) }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+          { id: parseInt(id, 10) }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
         if (!result.rows?.length) return { error: 'Not found' };
         return (await Promise.all(result.rows.map(toRow)))[0];
@@ -718,20 +721,21 @@ export class ApiServer {
 
     // ── Scenario 저장 API ──
     this.app.post('/api/scenarios', async (req) => {
-      const { symbol, direction, entryConditions, targetPrice, stopConditions, timeStopMin, confidence, reasoning } = req.body;
+      const { symbol, direction, entryConditions, targetPrice, stopPrice, stopConditions, timeStopMin, confidence, reasoning } = req.body;
       const conn = await getPool().getConnection();
       try {
         const result = await conn.execute(
           `INSERT INTO z2_execution_plan
-           (symbol, valid_until, direction, entry_conditions, target_price,
+           (symbol, valid_until, direction, entry_conditions, target_price, stop_price,
             stop_conditions, time_stop_min, confidence, reasoning, status)
-           VALUES (:sym, SYSTIMESTAMP + INTERVAL '4' HOUR, :dir, :entry, :target,
+           VALUES (:sym, SYSTIMESTAMP + INTERVAL '4' HOUR, :dir, :entry, :target, :stopPrice,
                    :stop, :ts, :conf, :reason, 'ACTIVE')
            RETURNING id INTO :id`,
           {
             sym: symbol, dir: direction,
             entry: { type: oracledb.DB_TYPE_JSON, val: entryConditions || {} },
             target: targetPrice || null,
+            stopPrice: stopPrice || null,
             stop: { type: oracledb.DB_TYPE_JSON, val: stopConditions || {} },
             ts: timeStopMin || 30,
             conf: confidence || 0.5,

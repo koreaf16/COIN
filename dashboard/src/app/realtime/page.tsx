@@ -322,7 +322,7 @@ export default function RealtimeDataPage() {
                     </tr>
                   ))}
                   {z0Data.length === 0 && (
-                    <tr><td colSpan={12} className="px-3 py-8 text-center text-on-surface-variant text-xs">데이터 없음</td></tr>
+                    <tr><td colSpan={z0Table === 'ohlcv' ? 12 : z0Table === 'derivatives' ? 10 : z0Table === 'liquidations' ? 6 : 4} className="px-3 py-8 text-center text-on-surface-variant text-xs">데이터 없음</td></tr>
                   )}
                 </tbody>
               </table>

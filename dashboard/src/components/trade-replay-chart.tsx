@@ -57,6 +57,24 @@ export function TradeReplayChart({ positionId, onClose }: Props) {
     const tzOffset = getETOffsetSec();
     const rawCandles = meta.candles;
 
+    // createChart 전에 처리 — 빈 배열이면 차트 생성 없이 리턴
+    const candles = rawCandles
+      .map((c: any) => ({
+        time: (Math.floor(Number(c.time)) + tzOffset) as any,
+        open: c.open, high: c.high, low: c.low, close: c.close,
+      }))
+      .filter((c: any) => isFinite(c.time));
+
+    const volumes = rawCandles
+      .map((c: any) => ({
+        time: (Math.floor(Number(c.time)) + tzOffset) as any,
+        value: c.volume ?? 0,
+        color: c.close >= c.open ? 'rgba(0,166,80,0.3)' : 'rgba(159,64,61,0.3)',
+      }))
+      .filter((c: any) => isFinite(c.time));
+
+    if (!candles.length) return;
+
     const chart = createChart(containerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: '#ffffff' },
@@ -96,17 +114,6 @@ export function TradeReplayChart({ positionId, onClose }: Props) {
       priceLineVisible: false,
       lastValueVisible: false,
     });
-
-    const candles = rawCandles.map((c: any) => ({
-      time: (c.time + tzOffset) as any,
-      open: c.open, high: c.high, low: c.low, close: c.close,
-    }));
-
-    const volumes = rawCandles.map((c: any) => ({
-      time: (c.time + tzOffset) as any,
-      value: c.volume,
-      color: c.close >= c.open ? 'rgba(0,166,80,0.3)' : 'rgba(159,64,61,0.3)',
-    }));
 
     candleSeries.setData(candles);
 

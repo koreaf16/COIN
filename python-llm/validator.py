@@ -55,7 +55,7 @@ def _crosscheck_numbers(result: dict, snapshot: dict) -> list:
     # OI 체크
     llm_oi = result.get("open_interest")
     actual_oi = snapshot.get("open_interest")
-    if llm_oi and actual_oi and actual_oi > 0:
+    if llm_oi is not None and actual_oi is not None and actual_oi > 0:
         ratio = abs(llm_oi - actual_oi) / actual_oi
         if ratio > 0.1:  # 10% 이상 차이
             warnings.append(

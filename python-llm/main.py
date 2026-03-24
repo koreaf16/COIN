@@ -34,19 +34,20 @@ from pydantic import BaseModel
 from db import init_db, log_llm_call
 from embedder import encode, load_model
 from llm import generate, parse_json_response
-from oracle_reader import init_pool, get_market_snapshot, get_similar_states, get_recent_sentiment, get_recent_briefing, get_all_symbols_snapshot, get_macro_snapshot
+from oracle_reader import (
+    init_pool, get_market_snapshot, get_similar_states, get_recent_sentiment,
+    get_recent_briefing, get_all_symbols_snapshot, get_macro_snapshot, get_recent_losses
+)
 from validator import validate_response
 from prompts import (
     SYSTEM_PROMPT,
     DEEPSEEK_UNIFIED_PLAN_SYSTEM,
     QWEN_SENTIMENT_SYSTEM,
-    QWEN_VALIDATE_SYSTEM,
     build_sentiment_prompt,
     build_briefing_prompt,
     build_scenario_prompt,
     build_unified_plan_prompt,
     build_event_interpret_prompt,
-    build_validate_position_prompt,
 )
 
 qwen_sem = asyncio.Semaphore(4)       # Qwen 3.5 27B (Ollama) 동시 최대 4개
@@ -61,7 +62,7 @@ async def lifespan(app: FastAPI):
     init_db()
     init_pool()
     load_model()
-    print("[LLM] Ready on port 8000")
+    print("[LLM] Ready on port 2002")
     yield
     print("[LLM] Shutting down")
 
@@ -93,11 +94,6 @@ class UnifiedPlanRequest(BaseModel):
 class EventRequest(BaseModel):
     symbol: str
     event_text: str
-
-class ValidateRequest(BaseModel):
-    symbol: str
-    position_id: int
-    entry_reasoning: dict
 
 class EmbedRequest(BaseModel):
     text: str
@@ -201,10 +197,10 @@ async def unified_plan(req: UnifiedPlanRequest):
     if route == "auto":
         route = "deepseek"  # 1분 주기 기본은 DeepSeek (빠름)
 
-    # 심볼마다 플랜 1개 보장: 플랜 1개당 ~350토큰 + 오버헤드 300
+    # 심볼 1개 기준: 구조 ~150 + reasoning 100자 = ~250토큰
     sym_count = len(all_snapshots)
-    max_tok_deepseek = 300 + sym_count * 350   # 배치 5개 기준 ~2050
-    max_tok_cloud = 300 + sym_count * 400      # 클라우드: reasoning 더 상세
+    max_tok_deepseek = 150 + sym_count * 250
+    max_tok_cloud = 150 + sym_count * 300
 
     if route == "cloud":
         async with claude_semaphore:

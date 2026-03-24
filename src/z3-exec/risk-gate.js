@@ -12,11 +12,13 @@ export class RiskGate {
     this.cooldownSec = opts.cooldownSec || 60;
     this.maxLeverage = opts.maxLeverage || 3;
     this.symbolLossCooldownSec = opts.symbolLossCooldownSec || 300; // 심볼별 손절 후 쿨다운 (5분)
+    this.symbolReentryCooldownSec = opts.symbolReentryCooldownSec || 1200; // 심볼별 재진입 쿨다운 (20분, 승패 무관)
 
     this.openTrades = [];
     this.dailyPnl = 0;
     this.lastExitTime = 0;
     this._symbolLossTime = new Map(); // symbol → 마지막 손절 시각
+    this._symbolExitTime = new Map(); // symbol → 마지막 청산 시각 (승패 무관)
   }
 
   check(signal, balance, currentPrice) {
@@ -37,7 +39,14 @@ export class RiskGate {
       return { allowed: false, reason: `${signal.symbol} 이미 포지션 보유` };
     }
 
-    // 심볼별 손절 후 쿨다운 (같은 심볼 연속 손절 방지)
+    // 심볼별 재진입 쿨다운 (승패 무관, 모든 청산 후)
+    const symbolExitTs = this._symbolExitTime.get(signal.symbol) || 0;
+    const symbolExitElapsed = (Date.now() - symbolExitTs) / 1000;
+    if (symbolExitElapsed < this.symbolReentryCooldownSec && symbolExitTs > 0) {
+      return { allowed: false, reason: `${signal.symbol} 재진입 쿨다운 ${Math.ceil(this.symbolReentryCooldownSec - symbolExitElapsed)}초` };
+    }
+
+    // 심볼별 손절 후 추가 쿨다운 (같은 심볼 연속 손절 방지)
     const symbolLossTs = this._symbolLossTime.get(signal.symbol) || 0;
     const symbolElapsed = (Date.now() - symbolLossTs) / 1000;
     if (symbolElapsed < this.symbolLossCooldownSec && symbolLossTs > 0) {
@@ -69,6 +78,22 @@ export class RiskGate {
       }
     }
 
+    // [사전 차단] 타겟가가 너무 가까우면 수수료 손실 위험 (최소 0.2% 이격)
+    if (signal.targetPrice) {
+      const isLong = signal.direction === 'LONG';
+      const distPct = Math.abs(signal.targetPrice - currentPrice) / currentPrice * 100;
+      const isTargetValid = isLong 
+        ? signal.targetPrice > currentPrice
+        : signal.targetPrice < currentPrice;
+
+      if (!isTargetValid) {
+        return { allowed: false, reason: `타겟가 역전: 현재가($${currentPrice})가 타겟($${signal.targetPrice})을 이미 도달함` };
+      }
+      if (distPct < 0.2) {
+        return { allowed: false, reason: `타겟가 너무 가까움: ${distPct.toFixed(3)}% < 최소 0.2% (수수료 손실 위험)` };
+      }
+    }
+
     return {
       allowed: true,
       positionSize: qty,
@@ -83,9 +108,11 @@ export class RiskGate {
   recordExit(pnl, symbol) {
     this.dailyPnl += pnl;
     this.lastExitTime = Date.now();
-    // 손실 시 해당 심볼 쿨다운 기록
-    if (pnl < 0 && symbol) {
-      this._symbolLossTime.set(symbol, Date.now());
+    if (symbol) {
+      // 모든 청산: 재진입 쿨다운 기록
+      this._symbolExitTime.set(symbol, Date.now());
+      // 손실 시 추가 손절 쿨다운 기록
+      if (pnl < 0) this._symbolLossTime.set(symbol, Date.now());
     }
   }
   resetDaily() { this.dailyPnl = 0; }

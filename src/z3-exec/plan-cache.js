@@ -31,10 +31,12 @@ export class PlanCache {
     return plans.filter(p => !p.validUntil || p.validUntil > now);
   }
 
-  /** 전체 ACTIVE 플랜 수 */
+  /** 전체 ACTIVE 플랜 수 (만료 제외) */
   get totalActive() {
+    const now = Date.now();
     let count = 0;
-    for (const plans of this.plans.values()) count += plans.length;
+    for (const plans of this.plans.values())
+      count += plans.filter(p => !p.validUntil || p.validUntil > now).length;
     return count;
   }
 

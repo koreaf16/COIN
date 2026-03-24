@@ -46,7 +46,7 @@ export class SmartExit {
     }
     this._bestPnlPct.delete(positionId);
     this._priceHistory.delete(positionId);
-    this._atrCache.delete(positionId);
+    // ATR 캐시는 symbol 키로 저장 (포지션 간 공유) → positionId로 삭제하지 않음
   }
 
   /** ATR 계산 (1분봉 기준, 20봉 평균) — 5초 캐시 */
@@ -136,7 +136,7 @@ export class SmartExit {
     }
     const currentBest = this._bestPnlPct.get(position.id) || 0;
     const minTrailActivation = this.roundTripFeePct * 5; // 수수료×5 (0.40%) 이상에서만 트레일링
-    if (currentBest > minTrailActivation && netPnlPct > 0) {
+    if (currentBest > minTrailActivation) {
       const retracement = currentBest - netPnlPct;
       if (retracement >= currentBest * this.trailRetraceRatio) {
         console.log(`[Z3-Exit] TRAILING_STOP: ${position.symbol} best=${currentBest.toFixed(3)}% now=${netPnlPct.toFixed(3)}% (minActivation=${minTrailActivation.toFixed(3)}%)`);

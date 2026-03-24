@@ -22,6 +22,7 @@ export class RuleEngine {
     this.checkCount = 0;
     this.signalCount = 0;
     this._eventPauseLogged = false;
+    this._evaluating = false; // 중복 실행 방지
 
     this.onSignal = null; // 콜백: (signal) => void
   }
@@ -38,33 +39,64 @@ export class RuleEngine {
     console.log(`[Z3-Rule] Stopped (checks=${this.checkCount}, signals=${this.signalCount})`);
   }
 
-  _evaluate() {
+  async _evaluate() {
+    if (this._evaluating) return; // 이전 평가 아직 진행 중 → 스킵
+    this._evaluating = true;
     this.checkCount++;
 
-    // 고임팩트 경제 이벤트 ±15분 이내 → 진입 일시정지
-    if (this._isEventWindow()) return;
+    try {
+      // 고임팩트 경제 이벤트 ±15분 이내 → 진입 일시정지
+      if (this._isEventWindow()) return;
 
-    for (const symbol of this.symbols) {
-      const plans = this.planCache.getActivePlans(symbol);
-      if (plans.length === 0) continue;
+      for (const symbol of this.symbols) {
+        const plans = this.planCache.getActivePlans(symbol);
+        if (plans.length === 0) continue;
 
-      const currentData = this._getCurrentData(symbol);
-      if (!currentData.price) continue;
+        const currentData = await this._getCurrentData(symbol);
+        if (!currentData.price) continue;
 
-      for (const plan of plans) {
-        const result = evaluateConditions(plan.entryConditions, currentData);
-        if (result.met) {
-          this._emitSignal(plan, currentData, result.details);
-          break; // 심볼당 1개 시그널만 (이중 진입 방지)
+        for (const plan of plans) {
+          const result = evaluateConditions(plan.entryConditions, currentData, plan.direction);
+          if (result.met) {
+            await this._emitSignal(plan, currentData, result.details);
+            break; // 심볼당 1개 시그널만 (이중 진입 방지)
+          }
         }
       }
+    } finally {
+      this._evaluating = false;
     }
   }
 
-  _getCurrentData(symbol) {
+  async _getCurrentData(symbol) {
     const snapshot = this.ringBuffer.getSnapshot(symbol);
     const deriv = snapshot.derivatives || {};
     const mark = snapshot.markPrice || {};
+
+    // DB에서 최신 OI Matrix + Volatility Acceleration 가져오기 (Conflict Filter / 조건 평가용)
+    let price_dir_1h = 'FLAT';
+    let oi_dir_1h = 'FLAT';
+    let volatility_acceleration = 1.0;
+    try {
+      const { getPool: getDbPool } = await import('../shared/db.js');
+      const conn = await getDbPool().getConnection();
+      try {
+        const oiResult = await conn.execute(
+          `SELECT price_dir, oi_dir FROM z1_oi_matrix WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY`,
+          { sym: symbol }
+        );
+        if (oiResult.rows && oiResult.rows.length > 0) {
+          [price_dir_1h, oi_dir_1h] = oiResult.rows[0];
+        }
+        const vaResult = await conn.execute(
+          `SELECT volatility_acceleration FROM z1_market_states WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY`,
+          { sym: symbol }
+        );
+        if (vaResult.rows && vaResult.rows.length > 0) {
+          volatility_acceleration = vaResult.rows[0][0] ?? 1.0;
+        }
+      } finally { await conn.close(); }
+    } catch {}
 
     // CVD 방향: 최근 60초 체결에서 매수/매도 비율
     const recentTrades = this.ringBuffer.getTradesWindow(symbol, 60);
@@ -86,7 +118,7 @@ export class RuleEngine {
     return {
       price: snapshot.price,
       funding_rate: mark.fundingRate || deriv.funding_rate || 0,
-      predicted_funding: mark.fundingRate || deriv.predicted_rate || 0,
+      predicted_funding: deriv.predicted_rate || 0,
       oi_change_pct: deriv.oi_change_pct || 0,
       open_interest: deriv.open_interest || 0,
       long_ratio: deriv.long_ratio || 0,
@@ -94,6 +126,9 @@ export class RuleEngine {
       cvd_direction: cvdDirection,
       macro_regime: this.macroCollector?.getRegime() || 'neutral',
       volume_surge: volumeSurge,
+      price_dir_1h,
+      oi_dir_1h,
+      volatility_acceleration,
     };
   }
 
@@ -132,6 +167,7 @@ export class RuleEngine {
       targetPrice: plan.targetPrice,
       stopPrice: plan.stopPrice,
       stopConditions: plan.stopConditions,
+      entryConditions: plan.entryConditions,
       timeStopMin: plan.timeStopMin,
       confidence: plan.confidence,
       reasoning: plan.reasoning,

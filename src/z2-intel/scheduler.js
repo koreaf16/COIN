@@ -30,6 +30,7 @@ export class LLMScheduler {
     this.unifiedProvider = opts.unifiedProvider || 'auto';  // 'local', 'cloud', 'auto'
     this.unifiedPlanValidMin = opts.unifiedPlanValidMin || 5;  // 플랜 유효시간 5분
 
+    this.ringBuffer = opts.ringBuffer || null;
     this._sentDebounceMs = (opts.sentimentDebounceMs || 10) * 1000;  // 10초 디바운스
     this._sentDebounceTimer = null;
     this._chainTimer = null;
@@ -122,7 +123,6 @@ export class LLMScheduler {
     const BATCH_SIZE = 5;
     let totalSaved = 0;
     let totalSkipped = 0;
-    let firstBatch = true;
 
     try {
       const eventCalendar = this.economicCalendar?.getNext24h() || [];
@@ -131,8 +131,8 @@ export class LLMScheduler {
 
       // [최적화 1] Symbol Pruning: 1시간 거래량 기준 정렬 (데이터 없는 종목 뒤로)
       const sortedSymbols = [...this.symbols].sort((a, b) => {
-        const snapA = this.newsCollector?.ringBuffer?.getLastKline(a, '1h');
-        const snapB = this.newsCollector?.ringBuffer?.getLastKline(b, '1h');
+        const snapA = this.ringBuffer?.getLastKline?.(a, '1h');
+        const snapB = this.ringBuffer?.getLastKline?.(b, '1h');
         return (snapB?.volume || 0) - (snapA?.volume || 0);
       });
 
@@ -144,7 +144,7 @@ export class LLMScheduler {
         // [최적화 2] Logical Caching: 핵심 데이터 변화가 미미한 심볼 제외
         const filteredBatch = [];
         for (const sym of batch) {
-          const current = this.newsCollector?.ringBuffer?.getSnapshot(sym);
+          const current = this.ringBuffer?.getSnapshot(sym);
           const last = this._lastSnapshots.get(sym);
 
           if (last && current && current.price && current.derivatives) {
@@ -154,7 +154,7 @@ export class LLMScheduler {
             // 가격 0.1% 미만 & OI 1% 미만 변화 시 기존 플랜 연장 후 건너뜀
             if (priceChange < 0.001 && oiChange < 0.01) {
               await this._extendPlanForSymbol(sym);
-              console.log(`[Z2-Sched] Skip LLM for ${sym} (Price $\Delta$=${(priceChange * 100).toFixed(3)}%, OI $\Delta$=${(oiChange * 100).toFixed(3)}%) - Plan extended`);
+              console.log(`[Z2-Sched] Skip LLM for ${sym} (Price Δ=${(priceChange * 100).toFixed(3)}%, OI Δ=${(oiChange * 100).toFixed(3)}%) - Plan extended`);
               totalSkipped++;
               continue;
             }
@@ -171,22 +171,37 @@ export class LLMScheduler {
 
         if (filteredBatch.length === 0) continue;
 
-        let result;
-        try {
-          result = await getUnifiedPlan(filteredBatch, eventCalendar, fearGreed, stablecoin, this.unifiedProvider);
-        } catch (err) {
-          console.error(`[Z2-Sched] Batch [${filteredBatch.join(',')}] error:`, err.message);
-          this.stats.errors++;
-          continue;
-        }
+        // 심볼별 개별 LLM 호출 → 병렬 실행
+        const batchResults = await Promise.allSettled(
+          filteredBatch.map(sym => getUnifiedPlan([sym], eventCalendar, fearGreed, stablecoin, this.unifiedProvider))
+        );
 
-        const plans = (result?.plans || []).filter(p => p.symbol && p.direction);
-        
-        for (const plan of plans) {
-          // 신규 플랜 저장 전 해당 종목의 기존 ACTIVE 플랜만 만료 처리 (Surgical Expire)
-          await this._expirePlanForSymbol(plan.symbol);
-          await this._saveUnifiedPlan(plan, result.confidence);
-          totalSaved++;
+        for (let j = 0; j < batchResults.length; j++) {
+          const sym = filteredBatch[j];
+          const res = batchResults[j];
+
+          if (res.status === 'rejected') {
+            console.error(`[Z2-Sched] Plan error ${sym}:`, res.reason?.message);
+            this.stats.errors++;
+            continue;
+          }
+
+          const plans = (res.value?.plans || []).filter(p => p.symbol && p.direction && p.direction !== 'SKIP');
+          if (!plans.length) {
+            console.log(`[Z2-Sched] SKIP: ${sym}`);
+            continue;
+          }
+
+          for (const plan of plans) {
+            await this._expirePlanForSymbol(plan.symbol);
+            try {
+              await this._saveUnifiedPlan(plan, res.value.confidence);
+              totalSaved++;
+            } catch (err) {
+              console.error(`[Z2-Sched] Failed to save plan for ${plan.symbol}:`, err.message);
+              this.stats.errors++;
+            }
+          }
         }
       }
 
@@ -263,7 +278,7 @@ export class LLMScheduler {
           stopPrice: plan.stop_price || null,
           stop: { type: oracledb.DB_TYPE_JSON, val: plan.stop_conditions || {} },
           timeStop: plan.time_stop_min || 15,
-          conf: Math.min(plan.probability || overallConfidence, overallConfidence),
+          conf: Math.min(plan.confidence ?? plan.probability ?? overallConfidence, overallConfidence),
           reasoning: plan.reasoning || '',
           scenId: plan.id || 'unified',
         },
