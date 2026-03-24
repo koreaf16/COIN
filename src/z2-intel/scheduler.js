@@ -1,12 +1,12 @@
 /**
- * Z2 LLM Scheduler — 하이브리드 모드
+ * Z2 LLM Scheduler — 하이브리드 모드 (DeepSeek + Cloud)
  *
- * [통합 모드 — 기본] 매 1분: 전체 심볼 통합 분석 → 최적 플랜만 생성 (로컬 Qwen)
+ * [통합 모드 — 기본] 매 1분: 전체 심볼 통합 분석 → 최적 플랜만 생성 (DeepSeek)
  * [레거시 모드]       매 10분: 심볼별 [브리핑 → 시나리오] 연쇄 (Claude CLI)
  *
- * 매 1분: 센티먼트 (로컬 Qwen)
+ * 매 1분: 센티먼트 (DeepSeek)
  * 이벤트 시: 긴급 [브리핑 → 시나리오] 즉시 재생성 (Claude CLI)
- * 매 1분: 포지션 논리 검증 (로컬 Qwen) — SmartExit에서 처리
+ * 매 1분: 포지션 논리 검증 (DeepSeek) — SmartExit에서 처리 (현재는 SL/TP로 비활성화)
  */
 
 import oracledb from 'oracledb';
@@ -26,9 +26,9 @@ export class LLMScheduler {
 
     // 통합 모드 설정
     this.unifiedMode = opts.unifiedMode !== false;  // 기본 ON
-    this.unifiedIntervalMs = (opts.unifiedIntervalMin || 1) * 60 * 1000;  // 1분
+    this.unifiedIntervalMs = (opts.unifiedIntervalMin || 15) * 60 * 1000;  // 스윙: 15분
     this.unifiedProvider = opts.unifiedProvider || 'auto';  // 'local', 'cloud', 'auto'
-    this.unifiedPlanValidMin = opts.unifiedPlanValidMin || 5;  // 플랜 유효시간 5분
+    this.unifiedPlanValidMin = opts.unifiedPlanValidMin || 240;  // 스윙: 4시간 유효
 
     this.ringBuffer = opts.ringBuffer || null;
     this._sentDebounceMs = (opts.sentimentDebounceMs || 10) * 1000;  // 10초 디바운스
@@ -151,8 +151,8 @@ export class LLMScheduler {
             const priceChange = Math.abs(current.price - last.price) / last.price;
             const oiChange = Math.abs((current.derivatives.open_interest || 0) - (last.oi || 0)) / (last.oi || 1e-9);
 
-            // 가격 0.1% 미만 & OI 1% 미만 변화 시 기존 플랜 연장 후 건너뜀
-            if (priceChange < 0.001 && oiChange < 0.01) {
+            // 가격 0.3% 미만 & OI 1% 미만 변화 시 기존 플랜 연장 후 건너뜀 (스윙: 임계값 완화)
+            if (priceChange < 0.003 && oiChange < 0.01) {
               await this._extendPlanForSymbol(sym);
               console.log(`[Z2-Sched] Skip LLM for ${sym} (Price Δ=${(priceChange * 100).toFixed(3)}%, OI Δ=${(oiChange * 100).toFixed(3)}%) - Plan extended`);
               totalSkipped++;
@@ -277,7 +277,7 @@ export class LLMScheduler {
           target: plan.target_price || null,
           stopPrice: plan.stop_price || null,
           stop: { type: oracledb.DB_TYPE_JSON, val: plan.stop_conditions || {} },
-          timeStop: plan.time_stop_min || 15,
+          timeStop: plan.time_stop_min || 480,  // 스윙 기본: 8시간
           conf: Math.min(plan.confidence ?? plan.probability ?? overallConfidence, overallConfidence),
           reasoning: plan.reasoning || '',
           scenId: plan.id || 'unified',
@@ -337,10 +337,10 @@ export class LLMScheduler {
       const isRecommended = s.id === recommended;
       if (isRecommended) {
         if (s.probability < 0.2) continue;
-        await this._savePlan(symbol, s, scenario.confidence, 30);
+        await this._savePlan(symbol, s, scenario.confidence, 480);  // 스윙: 8시간
       } else {
         if (s.probability < 0.4) continue;
-        await this._savePlan(symbol, s, scenario.confidence * 0.5, 15);
+        await this._savePlan(symbol, s, scenario.confidence * 0.5, 240);  // 스윙: 4시간
       }
       planCount++;
     }
@@ -390,7 +390,7 @@ export class LLMScheduler {
           target: scenario.target_price || null,
           stopPrice: scenario.stop_price || null,
           stop: { type: oracledb.DB_TYPE_JSON, val: scenario.stop_conditions || {} },
-          timeStop: scenario.time_stop_min || 15,
+          timeStop: scenario.time_stop_min || 480,  // 스윙 기본: 8시간
           conf: Math.min(scenario.probability || 0, overallConfidence),
           reasoning: scenario.reasoning || '',
           scenId: scenario.id || null,

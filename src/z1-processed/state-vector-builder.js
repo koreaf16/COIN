@@ -23,7 +23,7 @@ export class StateVectorBuilder {
   constructor(ringBuffer, macroCollector, opts = {}) {
     this.ringBuffer = ringBuffer;
     this.macroCollector = macroCollector;
-    this.intervalMs = (opts.intervalMin || 15) * 60 * 1000; // 기본 15분
+    this.intervalMs = (opts.intervalMin || 60) * 60 * 1000; // 스윙: 60분 주기 (15분 불필요)
     this._timer = null;
     this.symbols = opts.symbols || [];
     this.stats = { built: 0, errors: 0 };
@@ -132,7 +132,7 @@ export class StateVectorBuilder {
     const result = await conn.execute(
       `SELECT high_price, low_price, close_price FROM (
          SELECT high_price, low_price, close_price FROM z0_price_ohlcv
-         WHERE symbol = :sym AND timeframe = '1h'
+         WHERE symbol = :sym AND timeframe = '4h'
          ORDER BY ts DESC FETCH FIRST 31 ROWS ONLY
        ) ORDER BY ROWNUM`,
       { sym: symbol }
@@ -243,8 +243,8 @@ export class StateVectorBuilder {
   }
 
   async _getTrendStrength(conn, symbol) {
-    // 1h 캔들 우선, 부족 시 15m 폴백
-    for (const tf of ['1h', '15m', '5m']) {
+    // 4시간봉 우선 (스윙 추세파악), 부족 시 1시간봉, 15분봉 폴백
+    for (const tf of ['4h', '1h', '15m']) {
       const result = await conn.execute(
         `SELECT close_price FROM (
            SELECT close_price FROM z0_price_ohlcv

@@ -236,10 +236,10 @@ export class ApiServer {
 
             // meta 없을 때 fallback (동기화 전 or 복구 전)
             const safetyDir = exPos.side === 'LONG' ? -1 : 1;
-            const defaultSafety = exPos.entryPrice * (1 + safetyDir * 0.02);
+            const defaultSafety = exPos.entryPrice * (1 + safetyDir * 0.04); // 스윙: 4% 손절
             const holdMs = meta?.entryTime ? Date.now() - meta.entryTime : 0;
             const holdMin = +(holdMs / 60000).toFixed(1);
-            const tsMin = meta?.timeStopMin ?? 15;
+            const tsMin = meta?.timeStopMin ?? 480; // 스윙 기본: 8시간
 
             totalPnl += pnlUsd;
             positions.push({
@@ -737,7 +737,7 @@ export class ApiServer {
             target: targetPrice || null,
             stopPrice: stopPrice || null,
             stop: { type: oracledb.DB_TYPE_JSON, val: stopConditions || {} },
-            ts: timeStopMin || 30,
+            ts: timeStopMin || 480,  // 스윙 기본: 8시간
             conf: confidence || 0.5,
             reason: reasoning || '',
             id: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },

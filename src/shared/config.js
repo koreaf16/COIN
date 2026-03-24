@@ -57,14 +57,14 @@ export const config = {
   trading: {
     exchange: 'BINANCE_FUTURES',
     marginMode: 'ISOLATED',
-    maxLeverage: parseInt(env.MAX_LEVERAGE || '3'),
+    maxLeverage: parseInt(env.MAX_LEVERAGE || '2'),          // 스윙: 레버리지 하향
     feeRateTaker: parseFloat(env.FEE_RATE_TAKER || '0.04'),
     feeRoundtrip: parseFloat(env.FEE_ROUNDTRIP || '0.08'),
     maxPositionPct: parseFloat(env.MAX_POSITION_PCT || '10'),
-    safetyStopPct: parseFloat(env.SAFETY_STOP_PCT || '2'),
+    safetyStopPct: parseFloat(env.SAFETY_STOP_PCT || '4'),  // 스윙: 손절폭 4%
     maxSlippagePct: parseFloat(env.MAX_SLIPPAGE_PCT || '0.3'),  // 진입 전 호가창 슬리피지 한도
     maxDailyLossPct: parseFloat(env.MAX_DAILY_LOSS_PCT || '5'),
-    maxOpenTrades: parseInt(env.MAX_OPEN_TRADES || '3'),
+    maxOpenTrades: parseInt(env.MAX_OPEN_TRADES || '5'),    // 스윙: 동시 5개
     initialCapital: parseFloat(env.INITIAL_CAPITAL || '10000'),
     directions: ['LONG', 'SHORT'],
   },

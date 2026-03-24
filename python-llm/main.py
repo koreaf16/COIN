@@ -1,13 +1,13 @@
 """
 COIN v2 LLM Server — 5-Zone 아키텍처 Z2 Intelligence
-FastAPI + 하이브리드 LLM (Qwen 3.5 27B + DeepSeek + Claude)
+FastAPI + 하이브리드 LLM (DeepSeek + Qwen + Claude)
 
 엔드포인트:
-  POST /api/sentiment         매 5분 센티먼트 (Qwen)
+  POST /api/sentiment         매 5분 센티먼트 (DeepSeek)
   POST /api/briefing          매 1시간 종합 브리핑 (Cloud)
   POST /api/scenario          매 4시간 시나리오 (Cloud)
   POST /api/interpret-event   이벤트 긴급 해석 (Cloud)
-  POST /api/validate-position 매 5분 논리 검증 (Qwen)
+  POST /api/validate-position 매 5분 논리 검증 (DeepSeek)
   POST /api/unified-plan      매 1분 통합 플랜 (DeepSeek)
   POST /api/embed             텍스트 임베딩 (BGE-M3)
 """
@@ -42,12 +42,14 @@ from validator import validate_response
 from prompts import (
     SYSTEM_PROMPT,
     DEEPSEEK_UNIFIED_PLAN_SYSTEM,
-    QWEN_SENTIMENT_SYSTEM,
+    SENTIMENT_SYSTEM,
+    VALIDATE_SYSTEM,
     build_sentiment_prompt,
     build_briefing_prompt,
     build_scenario_prompt,
     build_unified_plan_prompt,
     build_event_interpret_prompt,
+    build_validate_position_prompt,
 )
 
 qwen_sem = asyncio.Semaphore(4)       # Qwen 3.5 27B (Ollama) 동시 최대 4개
@@ -95,6 +97,10 @@ class EventRequest(BaseModel):
     symbol: str
     event_text: str
 
+class ValidatePositionRequest(BaseModel):
+    symbol: str
+    entry_reasoning: dict = {}
+
 class EmbedRequest(BaseModel):
     text: str
 
@@ -116,10 +122,10 @@ async def llm_active():
 
 @app.post("/api/sentiment")
 async def sentiment(req: SentimentRequest):
-    """매 5분: 뉴스 센티먼트 분석 (Qwen)"""
+    """매 5분: 뉴스 센티먼트 분석 (DeepSeek)"""
     prompt = build_sentiment_prompt(req.news_items)
-    async with qwen_sem:
-        text, ms, tokens = await generate(prompt, QWEN_SENTIMENT_SYSTEM, 300, "sentiment")
+    async with deepseek_sem:
+        text, ms, tokens = await generate(prompt, SENTIMENT_SYSTEM, 300, "sentiment")
     result = parse_json_response(text)
     result.setdefault("sentiment", 0)
     result.setdefault("confidence", 0)
@@ -233,6 +239,18 @@ async def interpret_event(req: EventRequest):
     return result
 
 
+@app.post("/api/validate-position")
+async def validate_position(req: ValidatePositionRequest):
+    """스윙 포지션 논리 검증 (10분 주기, DeepSeek)"""
+    snapshot = await get_market_snapshot(req.symbol)
+    prompt = build_validate_position_prompt(req.entry_reasoning, snapshot)
+    async with deepseek_sem:
+        text, ms, tokens = await generate(prompt, VALIDATE_SYSTEM, 500, "validate_position")
+    result = parse_json_response(text)
+    result.setdefault("recommendation", "HOLD")
+    result.setdefault("confidence", 0)
+    print(f"[LLM] Validate {req.symbol}: {result.get('recommendation')} (conf={result.get('confidence')}, {ms}ms)")
+    return result
 
 @app.post("/api/embed")
 async def embed_text(req: EmbedRequest):

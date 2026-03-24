@@ -6,13 +6,13 @@
 export class RiskGate {
   constructor(opts = {}) {
     this.maxPositionPct = opts.maxPositionPct || 10.0;   // 1회 투자 최대 자본비율
-    this.safetyStopPct = opts.safetyStopPct || 2.0;      // 고정 안전망 손절 (%)
+    this.safetyStopPct = opts.safetyStopPct || 4.0;      // 스윙: 손절폭 확대 (4%)
     this.maxDailyLossPct = opts.maxDailyLossPct || 5.0;  // 일일 최대 손실 (%)
-    this.maxOpenTrades = opts.maxOpenTrades || 3;
-    this.cooldownSec = opts.cooldownSec || 60;
+    this.maxOpenTrades = opts.maxOpenTrades || 5;         // 스윙: 동시 5개
+    this.cooldownSec = opts.cooldownSec || 7200;          // 스윙: 2시간 쿨다운
     this.maxLeverage = opts.maxLeverage || 3;
-    this.symbolLossCooldownSec = opts.symbolLossCooldownSec || 300; // 심볼별 손절 후 쿨다운 (5분)
-    this.symbolReentryCooldownSec = opts.symbolReentryCooldownSec || 1200; // 심볼별 재진입 쿨다운 (20분, 승패 무관)
+    this.symbolLossCooldownSec = opts.symbolLossCooldownSec || 14400; // 스윙: 심볼별 손절 후 4시간
+    this.symbolReentryCooldownSec = opts.symbolReentryCooldownSec || 21600; // 스윙: 재진입 쿨다운 6시간
 
     this.openTrades = [];
     this.dailyPnl = 0;

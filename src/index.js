@@ -169,7 +169,7 @@ async function start() {
   economicCalendar.start();
   fearGreedCollector.start();
   stablecoinCollector.start();
-  symbolRotator.start();  // 시작 30초 후 첫 로테이션
+  // symbolRotator.start();  // 잡코인 휩쏘 문제로 로테이션 비활성화 (메이저/준메이저 10개만 사용)
   global._symbolRotator = symbolRotator;
 
   // Z1 (PL/SQL 트리거 자동)

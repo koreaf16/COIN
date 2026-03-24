@@ -15,7 +15,7 @@ export class RuleEngine {
     this.macroCollector = macroCollector;
     this.symbols = symbols;
     this.economicCalendar = opts.economicCalendar || null;
-    this.intervalMs = (opts.intervalMs || 1000); // 1초
+    this.intervalMs = (opts.intervalMs || 5000); // 스윙: 5초 (단타 1초 불필요)
 
     this.planCache = new PlanCache({ refreshIntervalSec: opts.cacheRefreshSec || 10 });
     this._timer = null;
@@ -98,8 +98,8 @@ export class RuleEngine {
       } finally { await conn.close(); }
     } catch {}
 
-    // CVD 방향: 최근 60초 체결에서 매수/매도 비율
-    const recentTrades = this.ringBuffer.getTradesWindow(symbol, 60);
+    // CVD 방향: 최근 300초 체결에서 매수/매도 비율 (스윙: 5분 창)
+    const recentTrades = this.ringBuffer.getTradesWindow(symbol, 300);
     let buyVol = 0, sellVol = 0;
     for (const t of recentTrades) {
       if (t.isBuyerMaker) sellVol += t.qty;
@@ -108,12 +108,12 @@ export class RuleEngine {
     const totalVol = buyVol + sellVol;
     const cvdDirection = totalVol > 0 ? (buyVol - sellVol) / totalVol : 0;
 
-    // 볼륨 서지: 최근 60초 vs 최근 300초 평균
-    const trades5m = this.ringBuffer.getTradesWindow(symbol, 300);
-    let vol5m = 0;
-    for (const t of trades5m) vol5m += t.qty;
-    const avgVol1m = trades5m.length > 0 ? (vol5m / 5) : 1;
-    const volumeSurge = avgVol1m > 0 ? totalVol / avgVol1m : 1.0;
+    // 볼륨 서지: 최근 300초 vs 최근 3600초 평균 (스윙: 5분 vs 1시간)
+    const trades1h = this.ringBuffer.getTradesWindow(symbol, 3600);
+    let vol1h = 0;
+    for (const t of trades1h) vol1h += t.qty;
+    const avgVol5m = trades1h.length > 0 ? (vol1h / 12) : 1; // 3600/300=12 구간
+    const volumeSurge = avgVol5m > 0 ? totalVol / avgVol5m : 1.0;
 
     return {
       price: snapshot.price,
@@ -137,7 +137,7 @@ export class RuleEngine {
     if (!this.economicCalendar) return false;
     const events = this.economicCalendar.getNext24h?.() || [];
     const now = Date.now();
-    const windowMs = 15 * 60 * 1000;
+    const windowMs = 30 * 60 * 1000; // 스윙: 행사 전후 관망 쿽 확대 (30분)
 
     for (const evt of events) {
       const evtTime = new Date(evt.datetime || evt.date).getTime();

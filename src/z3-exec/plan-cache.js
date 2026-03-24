@@ -9,7 +9,7 @@ import { getPool } from '../shared/db.js';
 
 export class PlanCache {
   constructor(opts = {}) {
-    this.refreshIntervalMs = (opts.refreshIntervalSec || 15) * 1000;
+    this.refreshIntervalMs = (opts.refreshIntervalSec || 60) * 1000; // 스윙: 1분 갱신 (단타 15초 불필요)
     this.plans = new Map(); // symbol → [plan, plan, ...]
     this._timer = null;
     this.lastRefresh = 0;

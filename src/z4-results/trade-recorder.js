@@ -162,7 +162,7 @@ export class TradeRecorder {
           price: trade.entryPrice,
           target: trade.targetPrice || null,
           safety: trade.safetyStop || null,
-          tsMin: trade.timeStopMin || 15,
+          tsMin: trade.timeStopMin || 480,  // 스윙 기본: 8시간
           ts: new Date(trade.entryTime),
           reasoning: JSON.stringify(trade.entryReasoning || {}),
           planId: trade.planId || null,

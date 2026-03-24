@@ -1,10 +1,10 @@
 """
-LLM 하이브리드 클라이언트 — Qwen + DeepSeek API + CLI(Claude Opus / Gemini Pro)
+LLM 하이브리드 클라이언트 — DeepSeek API + Qwen (Ollama) + CLI(Claude Opus / Gemini Pro)
 
 라우팅:
-  qwen     → Qwen 3.5 27B via Ollama (센티먼트, 검증)
-  deepseek → DeepSeek API (unified_plan 전용)
-  cloud    → Claude CLI (Opus 4.6) → Gemini CLI (3.1 Pro) → Qwen 폴백
+  deepseek → DeepSeek API (메인: 통합 플랜, 센티먼트, 검증)
+  qwen     → Qwen 3.5 27B via Ollama (폴백용)
+  cloud    → Claude CLI (Opus 4.6) → Gemini CLI (3.1 Pro) → DeepSeek 폴백
 """
 import asyncio
 import json
@@ -73,37 +73,37 @@ def get_active_calls() -> list:
 
 
 async def generate(prompt: str, system: str = "You are a crypto trading analyst.",
-                   max_tokens: int = 1000, task_type: str = "qwen"):
+                   max_tokens: int = 1000, task_type: str = "deepseek"):
     """LLM 호출 (자동 라우팅). Returns: (text, ms, tokens)"""
     route = _FORCE_ROUTES.get(task_type) or LLM_ROUTING.get(task_type, task_type)
 
-    if route == "qwen":
-        provider = "qwen"
-    elif route == "deepseek":
+    if route == "deepseek":
         provider = "deepseek"
+    elif route == "qwen":
+        provider = "qwen"
     elif route == "cloud":
         if _claude_cli:
             provider = "claude"
         elif _gemini_cli:
             provider = "gemini"
         else:
-            provider = "qwen"  # cloud 불가 시 Qwen 폴백
+            provider = "deepseek"  # cloud 불가 시 DeepSeek 폴백
     else:
-        provider = "qwen"
+        provider = "deepseek"
 
     call_id = _start_call(provider, task_type, prompt)
     print(f"[LLM-Track] START {call_id} provider={provider} task={task_type} prompt_len={len(prompt)}")
     try:
-        if provider == "qwen":
-            return await _generate_qwen(prompt, system, max_tokens, call_id)
-        elif provider == "deepseek":
+        if provider == "deepseek":
             return await _generate_deepseek(prompt, system, max_tokens, call_id)
+        elif provider == "qwen":
+            return await _generate_qwen(prompt, system, max_tokens, call_id)
         elif provider == "claude":
             return await _generate_cli("claude", prompt, system, call_id)
         elif provider == "gemini":
             return await _generate_cli("gemini", prompt, system, call_id)
         else:
-            return await _generate_qwen(prompt, system, max_tokens, call_id)
+            return await _generate_deepseek(prompt, system, max_tokens, call_id)
     finally:
         print(f"[LLM-Track] DONE  {call_id} output_len={len(_active_calls.get(call_id, {}).get('output', ''))}")
         _finish_call(call_id)

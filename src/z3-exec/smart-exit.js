@@ -1,29 +1,29 @@
 /**
- * Z3 Smart Exit — 7경로 지능형 청산
+ * Z3 Smart Exit — 7경로 지능형 청산 (스윙 모드)
  *
- * [즉시 — 100ms 가격 체크]
- * 경로 1: ATR 동적 타겟 (진입가 ± 2×ATR, 최소 수수료×2.5 보장)
- * 경로 2: 모멘텀 반전 (3연속 반대 봉 → 추세 꺾임)
- * 경로 3: 트레일링 스탑 (수수료 차감 순이익 되돌림)
- * 경로 4: 안전망 손절 (고정 2%)
- * 경로 5: 시간 손절 (15분)
+ * [즉시 — 모니터링 주기 가격 체크]
+ * 경로 1: ATR 동적 타겟 (진입가 ± 2×4h ATR, 최소 0.5% 보장)
+ * 경로 2: 모멘텀 반전 (4시간봉 3연속 반대 봉 → 추세 꺾임)
+ * 경로 3: 트레일링 스탑 (순이익 1.5% 이상에서 활성화)
+ * 경로 4: 안전망 손절 (고정 % — RiskGate 설정 따름)
+ * 경로 5: 시간 손절 (기본 480분/8시간)
  *
  * [보조 — 30초 LLM]
  * 경로 6: LLM 논리 무효화 (INVALIDATION)
  *
  * [원본]
- * 경로 7: LLM 타겟 도달 (비현실적이면 ATR 타겟이 먼저 발동)
+ * 경로 7: LLM 타겟 도달
  */
 
 
 export class SmartExit {
   constructor(opts = {}) {
-    this.validateIntervalMs = (opts.validateIntervalSec || 180) * 1000;
+    this.validateIntervalMs = (opts.validateIntervalSec || 600) * 1000; // 스윙: 10분 주기 LLM 검증
     this.roundTripFeePct = opts.roundTripFeePct || 0.08;
     this.trailRetraceRatio = opts.trailRetraceRatio || 0.4;
-    this.atrMultiplier = opts.atrMultiplier || 2.0;     // ATR 타겟 = 진입가 ± 2×ATR
-    this.minTargetPct = opts.minTargetPct || this.roundTripFeePct * 5; // ATR 타겟 최소 수익률 (수수료×5 = 0.40%)
-    this.momentumBars = opts.momentumBars || 3;          // 반전 감지 봉 수
+    this.atrMultiplier = opts.atrMultiplier || 2.0;     // ATR 타겟 = 진입가 ± 2×4h ATR
+    this.minTargetPct = opts.minTargetPct || 0.5;        // ATR 타겟 최소 수익률 (스윙: 0.5%)
+    this.momentumBars = opts.momentumBars || 3;          // 반전 감지 봉 수 (4시간봉 3연속)
     this.ringBuffer = opts.ringBuffer || null;            // Z0 RingBuffer 참조
     this._validateTimers = new Map();
     this._bestPnlPct = new Map();
@@ -31,10 +31,34 @@ export class SmartExit {
     this._priceHistory = new Map();   // positionId → [prices...] (100ms 샘플)
   }
 
-  /** 포지션 열릴 때 모니터링 시작 (LLM 검증 제거 — stop_conditions/SL/TP로 대체) */
+  /** 포지션 열릴 때 모니터링 시작 — 10분 주기 LLM 논리 검증 (스윙 INVALIDATION) */
   startValidation(position, onExit) {
     this._bestPnlPct.set(position.id, 0);
     this._priceHistory.set(position.id, []);
+
+    // 스윙: 10분마다 LLM에게 진입 논리 유효성 검증 요청
+    const timer = setInterval(async () => {
+      try {
+        const { validatePosition } = await import('../z2-intel/llm-client.js');
+        const result = await validatePosition(position.symbol, position.entryReasoning || {});
+
+        if (!result || result.confidence < 0.5) return; // 확신 부족하면 무시
+
+        if (result.recommendation === 'FULL_EXIT') {
+          console.log(`[Z3-Exit] INVALIDATION: LLM recommends FULL_EXIT for ${position.symbol} — "${result.reasoning || ''}"`);
+          if (onExit) onExit('INVALIDATION', result);
+        } else if (result.recommendation === 'PARTIAL_EXIT') {
+          console.log(`[Z3-Exit] INVALIDATION: LLM recommends PARTIAL_EXIT for ${position.symbol}`);
+          if (onExit) onExit('PARTIAL_EXIT', result);
+        }
+        // HOLD → 아무 것도 안 함
+      } catch (err) {
+        // LLM 호출 실패는 비치명적 — 가격 기반 청산이 안전망
+        console.warn(`[Z3-Exit] Validate error ${position.symbol}: ${err.message}`);
+      }
+    }, this.validateIntervalMs);
+
+    this._validateTimers.set(position.id, timer);
   }
 
   /** 포지션 닫힐 때 검증 중단 */
@@ -49,13 +73,17 @@ export class SmartExit {
     // ATR 캐시는 symbol 키로 저장 (포지션 간 공유) → positionId로 삭제하지 않음
   }
 
-  /** ATR 계산 (1분봉 기준, 20봉 평균) — 5초 캐시 */
+  /** ATR 계산 (4시간봉 기준, 20봉 평균) — 5분 캐시 (스윙: 4h ATR) */
   _getATR(symbol) {
     const cached = this._atrCache.get(symbol);
-    if (cached && Date.now() - cached.ts < 5000) return cached.atr;
+    if (cached && Date.now() - cached.ts < 300000) return cached.atr; // 5분 캐시
 
     if (!this.ringBuffer) return null;
-    const klines = this.ringBuffer.getKlines(symbol, '1m');
+    // 4시간봉 우선, 없으면 1시간봉 폴백
+    let klines = this.ringBuffer.getKlines(symbol, '4h');
+    if (!klines || klines.length < 5) {
+      klines = this.ringBuffer.getKlines(symbol, '1h');
+    }
     if (!klines || klines.length < 5) return null;
 
     const recent = klines.slice(-20);
@@ -68,10 +96,14 @@ export class SmartExit {
     return atr;
   }
 
-  /** 모멘텀 반전 감지 (최근 N개 봉이 연속으로 반대 방향) */
+  /** 모멘텀 반전 감지 (4시간봉 N개 연속 반대 방향 — 스윙 기준) */
   _checkMomentumReversal(symbol, isLong) {
     if (!this.ringBuffer) return false;
-    const klines = this.ringBuffer.getKlines(symbol, '1m');
+    // 4시간봉 우선, 없으면 1시간봉 폴백
+    let klines = this.ringBuffer.getKlines(symbol, '4h');
+    if (!klines || klines.length < this.momentumBars) {
+      klines = this.ringBuffer.getKlines(symbol, '1h');
+    }
     if (!klines || klines.length < this.momentumBars) return false;
 
     const recent = klines.slice(-this.momentumBars);
@@ -129,13 +161,13 @@ export class SmartExit {
       if (!isLong && currentPrice >= position.safetyStop) return 'SAFETY_STOP';
     }
 
-    // ── 경로 3: 트레일링 스탑 (최소 순이익 확보 후 활성화) ──
+    // ── 경로 3: 트레일링 스탑 (스윙: 최소 1.5% 순이익 확보 후 활성화) ──
     const bestPnl = this._bestPnlPct.get(position.id) || 0;
     if (netPnlPct > bestPnl) {
       this._bestPnlPct.set(position.id, netPnlPct);
     }
     const currentBest = this._bestPnlPct.get(position.id) || 0;
-    const minTrailActivation = this.roundTripFeePct * 5; // 수수료×5 (0.40%) 이상에서만 트레일링
+    const minTrailActivation = 1.5; // 스윙: 최소 1.5% 순이익 이상에서만 트레일링 활성화
     if (currentBest > minTrailActivation) {
       const retracement = currentBest - netPnlPct;
       if (retracement >= currentBest * this.trailRetraceRatio) {
@@ -144,19 +176,19 @@ export class SmartExit {
       }
     }
 
-    // ── 경로 2: 모멘텀 반전 (수수료 커버 수익 구간에서만) ──
+    // ── 경로 2: 모멘텀 반전 (4시간봉, 스윙 수익 구간에서만) ──
     if (netPnlPct > minTrailActivation && this._checkMomentumReversal(position.symbol, isLong)) {
       console.log(`[Z3-Exit] MOMENTUM_REVERSAL: ${position.symbol} ${this.momentumBars}연속 반대봉, netPnl=${netPnlPct.toFixed(3)}%`);
       return 'MOMENTUM_REVERSAL';
     }
 
     // ── 경로 5: 동적 시간 손절 (Dynamic Time Stop) ──
-    // 변동성이 크면 승부가 빨리 나야 함. ATR이 높을수록 시간을 단축.
-    let dynamicTimeStopMin = position.timeStopMin || 15;
+    // 스윙: 4h ATR 기반. 변동성이 크면 승부가 빨리 나야 하지만 최소 1~2시간 이상 유지.
+    let dynamicTimeStopMin = position.timeStopMin || 480; // 스윙 기본: 8시간
     if (atr && entry > 0) {
-      const volRatio = (atr / entry) * 100; // 1m ATR %
-      if (volRatio > 0.5) dynamicTimeStopMin = Math.max(3, Math.round(dynamicTimeStopMin * 0.5));
-      else if (volRatio > 0.3) dynamicTimeStopMin = Math.max(5, Math.round(dynamicTimeStopMin * 0.7));
+      const volRatio = (atr / entry) * 100; // 4h ATR %
+      if (volRatio > 5.0) dynamicTimeStopMin = Math.max(60, Math.round(dynamicTimeStopMin * 0.5));
+      else if (volRatio > 3.0) dynamicTimeStopMin = Math.max(120, Math.round(dynamicTimeStopMin * 0.7));
     }
 
     const holdMin = (Date.now() - position.entryTime) / 60000;
@@ -165,12 +197,12 @@ export class SmartExit {
       return 'TIME_STOP';
     }
 
-    // ── [신규] 경로 8: 긴급 탈출 (Emergency Exit — RIVERUSDT 교훈) ──
-    // 1. 진입 후 절반의 시간이 지났는데도 마이너스 수익권이며 반등 기미가 없을 때
-    if (holdMin > dynamicTimeStopMin * 0.5 && netPnlPct < -0.3) {
+    // ── [신규] 경로 8: 긴급 탈출 (Emergency Exit — 스윙: 절반 경과 후 손실+4h 반전) ──
+    // 보유 절반 시점에 손실 중이고 4시간봉이 반전 시그널이면 조기 탈출
+    if (holdMin > dynamicTimeStopMin * 0.5 && netPnlPct < -1.0) {
       const isOppositeCandle = this._checkMomentumReversal(position.symbol, isLong);
       if (isOppositeCandle) {
-        console.log(`[Z3-Exit] EMERGENCY_EXIT: No bounce detected after half-time. Market is too heavy.`);
+        console.log(`[Z3-Exit] EMERGENCY_EXIT: 4h reversal detected after half-time with loss. Exiting.`);
         return 'EMERGENCY_EXIT';
       }
     }

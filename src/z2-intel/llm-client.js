@@ -52,3 +52,11 @@ export async function embed(text) {
   const result = await callLLM('/api/embed', { text });
   return result.vector;
 }
+
+/** 스윙 포지션 논리 검증 (10분 주기) — HOLD / PARTIAL_EXIT / FULL_EXIT 반환 */
+export async function validatePosition(symbol, entryReasoning) {
+  return callLLM('/api/validate-position', {
+    symbol,
+    entry_reasoning: entryReasoning,
+  }, 30000);
+}

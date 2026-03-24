@@ -82,8 +82,42 @@ async def get_market_snapshot(symbol: str) -> dict:
         cvd_raw = float(r[0] or 0)
         vol_1h = float(r[1] or 0)
         snapshot["cvd_1h"] = cvd_raw
-        # cvd / volume = (buyVol - sellVol) / totalVol → -1.0 ~ +1.0 (rule engine cvd_direction과 동일 스케일)
         snapshot["cvd_direction"] = round(cvd_raw / vol_1h, 3) if vol_1h > 0 else 0.0
+
+    # ── 4h 캔들 추세/ATR (스윙 핵심) ──
+    rows_4h = _query(
+        "SELECT high_price, low_price, close_price FROM ("
+        "  SELECT high_price, low_price, close_price FROM z0_price_ohlcv"
+        "  WHERE symbol = :sym AND timeframe = '4h'"
+        "  ORDER BY ts DESC FETCH FIRST 20 ROWS ONLY"
+        ") ORDER BY ROWNUM",
+        {"sym": symbol})
+    if rows_4h and len(rows_4h) >= 5:
+        closes_4h = [float(r[2]) for r in rows_4h]
+        # 4h ATR (최근 14봉)
+        atr_bars = rows_4h[-min(14, len(rows_4h)):]
+        atr_sum = sum(float(r[0]) - float(r[1]) for r in atr_bars)
+        atr_4h = atr_sum / len(atr_bars)
+        snapshot["atr_4h"] = round(atr_4h, 5)
+        if closes_4h[-1] > 0:
+            snapshot["atr_4h_pct"] = round(atr_4h / closes_4h[-1] * 100, 3)
+        # 4h 추세 (EMA 12 vs EMA 26)
+        if len(closes_4h) >= 12:
+            ema12 = closes_4h[0]
+            k12 = 2 / 13
+            for p in closes_4h[1:]:
+                ema12 = p * k12 + ema12 * (1 - k12)
+            ema26 = closes_4h[0]
+            k26 = 2 / 27
+            for p in closes_4h[1:]:
+                ema26 = p * k26 + ema26 * (1 - k26)
+            trend_4h = (ema12 - ema26) / ema26 if ema26 > 0 else 0
+            snapshot["trend_4h"] = round(max(-1, min(1, trend_4h / 0.03)), 3)  # ±3%를 ±1로 정규화
+            snapshot["trend_4h_bias"] = "bullish" if trend_4h > 0.005 else "bearish" if trend_4h < -0.005 else "neutral"
+        # 4h 가격 변동률 (최근 3봉 = 12시간)
+        if len(closes_4h) >= 4:
+            chg_12h = (closes_4h[-1] - closes_4h[-4]) / closes_4h[-4] * 100
+            snapshot["price_change_12h_pct"] = round(chg_12h, 3)
 
     r = _query_one(
         "SELECT regime, atr_14, bb_width FROM z1_volatility_regime "
@@ -143,6 +177,11 @@ async def get_all_symbols_snapshot(symbols: list[str]) -> dict:
             "vol_r": snap.get("volatility_regime", "MED"),
             "vol_acc": round(snap.get("volatility_acceleration", 1.0), 3),
             "oi_mat": snap.get("oi_matrix", {}).get("interpretation", "N/A"),
+            # 4h 스윙 핵심 데이터
+            "t4h": snap.get("trend_4h", 0),           # 4h 추세 강도 (-1~+1)
+            "t4h_b": snap.get("trend_4h_bias", "N/A"), # 4h 방향 편향
+            "atr4h": snap.get("atr_4h_pct", 0),        # 4h ATR %
+            "chg12h": snap.get("price_change_12h_pct", 0), # 12시간 가격변동률
             "liq": [
                 {"p": round(l["price"], 5), "v": round(l["long_usd"] + l["short_usd"], 0)}
                 for l in snap.get("top_liquidation_levels", [])[:2]

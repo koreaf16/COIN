@@ -33,19 +33,19 @@ export class Executor {
 
     this.riskGate = new RiskGate({
       maxPositionPct: opts.maxPositionPct || 10.0,
-      safetyStopPct: opts.safetyStopPct || 2.0,
-      maxDailyLossPct: opts.maxDailyLossPct || 10.0,
-      maxOpenTrades: opts.maxOpenTrades || 20,
-      cooldownSec: opts.cooldownSec || 30,
-      maxLeverage: opts.maxLeverage || 3,
+      safetyStopPct: opts.safetyStopPct || 4.0,       // 스윙: 4%
+      maxDailyLossPct: opts.maxDailyLossPct || 5.0,
+      maxOpenTrades: opts.maxOpenTrades || 5,           // 스윙: 동시 5개
+      cooldownSec: opts.cooldownSec || 7200,            // 스윙: 2시간
+      maxLeverage: opts.maxLeverage || 2,               // 스윙: 레버리지 하향
     });
 
     this.smartExit = new SmartExit({
-      validateIntervalSec: opts.validateIntervalSec || 180,
+      validateIntervalSec: opts.validateIntervalSec || 600, // 스윙: 10분 LLM 검증
       ringBuffer: this.ringBuffer,
     });
 
-    this.leverage = opts.maxLeverage || 3;
+    this.leverage = opts.maxLeverage || 2;  // 스윙: 2x
     this.balance = opts.initialCapital || 10000;   // available (가용 증거금)
     this.walletBalance = opts.initialCapital || 10000; // wallet (가용 + 사용 중 증거금)
     this.liveMode = false;  // init() 후 true (API 키 있을 때)
@@ -81,17 +81,17 @@ export class Executor {
       await this._recoverPositions();
       await this._syncPositions();
 
-      // 10초마다 포지션 동기화
-      this._syncTimer = setInterval(() => this._syncPositions(), 10000);
+      // 60초마다 포지션 동기화 (스윙: 고빈도 불필요)
+      this._syncTimer = setInterval(() => this._syncPositions(), 60000);
 
-      // 5분마다 스테일 포지션 정리 (time_stop 초과 / ERROR 재시도)
-      this._cleanupTimer = setInterval(() => this._cleanupStalePositions(), 5 * 60 * 1000);
+      // 30분마다 스테일 포지션 정리 (스윙: 잦은 정리 불필요)
+      this._cleanupTimer = setInterval(() => this._cleanupStalePositions(), 30 * 60 * 1000);
     } else {
       console.log(`[Z3-Exec] SIM mode (no API key) balance=$${this.balance.toFixed(2)}`);
     }
 
-    // 100ms마다 가격 기반 청산 체크
-    this._monitorTimer = setInterval(() => this._monitorPositions(), 100);
+    // 2000ms마다 가격 기반 청산 체크 (스윙: 100ms 고주파 감시 불필요)
+    this._monitorTimer = setInterval(() => this._monitorPositions(), 2000);
 
     // [Bug#4] 자정마다 dailyPnl 리셋
     this._scheduleDailyReset();
@@ -327,7 +327,7 @@ export class Executor {
         qty: executedQty,
         targetPrice: signal.targetPrice,
         safetyStop: effectiveStop,
-        timeStopMin: signal.timeStopMin || 15,
+        timeStopMin: signal.timeStopMin || 480,  // 스윙 기본: 8시간
         stopConditions: signal.stopConditions,
         confidence: signal.confidence,
         orderId,

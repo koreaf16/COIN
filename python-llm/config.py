@@ -26,7 +26,7 @@ ORACLE_PASSWORD = _env.get("ORACLE_PASSWORD", "")
 ORACLE_CONNECT_STRING = _env.get("ORACLE_CONNECT_STRING", "")
 ORACLE_INSTANT_CLIENT_PATH = _env.get("ORACLE_INSTANT_CLIENT_PATH", "")
 
-# ── DeepSeek API (unified_plan 전용) ──
+# ── DeepSeek API (메인 분석 엔진) ──
 _ds_base = _env.get("VLLM_URL", "https://api.deepseek.com").rstrip("/")
 if _ds_base.endswith("/v1"):
     _ds_base = _ds_base[:-3]
@@ -34,7 +34,7 @@ DEEPSEEK_URL = _ds_base + "/v1/chat/completions"
 DEEPSEEK_MODEL = _env.get("VLLM_MODEL", "deepseek-chat")
 DEEPSEEK_API_KEY = _env.get("VLLM_API_KEY", "")
 
-# ── Qwen 3.5 27B (LM Studio — 센티먼트, 검증 등) ──
+# ── Qwen 3.5 27B (폴백용) ──
 _qwen_base = _env.get("QWEN_URL", "http://192.168.0.3:1234/v1").rstrip("/")
 if not _qwen_base.endswith("/v1"):
     _qwen_base = _qwen_base + "/v1"
@@ -55,10 +55,11 @@ EMBEDDING_URL = _emb_base + "/embeddings"
 BGE_MODEL_NAME = _env.get("EMBEDDING_MODEL", "text-embedding-bge-m3")
 
 # ── LLM 라우팅 규칙 ──
-# Qwen: 빈번 호출(센티먼트, 검증), DeepSeek: unified_plan, Cloud: 중요 판단
+# DeepSeek: 모든 분석 작업 (통합 플랜, 센티먼트, 검증)
+# Cloud: 중요 판단 (브리핑, 시나리오, 이벤트 해석)
 LLM_ROUTING = {
-    "sentiment": "qwen",
-    "validate_position": "qwen",
+    "sentiment": "deepseek",
+    "validate_position": "deepseek",
     "embed": "local",
     "briefing": "cloud",
     "scenario": "cloud",

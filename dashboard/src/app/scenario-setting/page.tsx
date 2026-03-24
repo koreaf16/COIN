@@ -104,13 +104,13 @@ export default function ScenarioSettingPage() {
           <div>
             <h3 className="font-headline font-bold text-sm mb-2">시나리오 자동 생성 프로세스</h3>
             <div className="text-sm text-on-surface-variant leading-relaxed space-y-1">
-              <p>1. <strong>센티먼트 (1분 주기, 로컬 Qwen)</strong> — 최근 뉴스 헤드라인을 분석하여 시장 감성 점수(-1~+1)를 산출합니다.</p>
+              <p>1. <strong>센티먼트 (1분 주기, DeepSeek)</strong> — 최근 뉴스 헤드라인을 분석하여 시장 감성 점수(-1~+1)를 산출합니다.</p>
               <p>2. <strong>브리핑 → 시나리오 연쇄 (10분 주기, Claude CLI)</strong> — 시장 스냅샷 + 센티먼트 + 유사 과거 사례를 종합하여 브리핑을 생성한 뒤, 즉시 3개 시나리오(진입 조건 JSON + 타겟/손절)를 생성합니다.</p>
               <p>3. <strong>시나리오 컨텍스트:</strong> 경제 캘린더, Fear &amp; Greed 지수, 스테이블코인 공급량이 시나리오 생성에 반영됩니다.</p>
               <p>4. 각 시나리오는 <strong>z2_execution_plan</strong>에 ACTIVE 상태로 저장되며, 유효기간은 <strong>1시간</strong>입니다.</p>
               <p>5. <strong>룰엔진 (1초 주기)</strong> — 활성 플랜의 진입 조건(price, funding_rate, cvd_direction, macro_regime, volume_surge 등)을 실시간 데이터와 대조합니다.</p>
               <p>6. 모든 조건 충족 시 → <strong>Binance Futures 시장가 진입</strong> + 안전망 스탑 설정 → 지능형 청산(타겟/논리무효화/시간손절) 모니터링</p>
-              <p>7. <strong>포지션 검증 (5분 주기, 로컬 Qwen)</strong> — 진입 근거가 여전히 유효한지 LLM이 재검증하여 무효 시 청산 권고합니다.</p>
+              <p>7. <strong>포지션 검증 (5분 주기, DeepSeek)</strong> — 진입 근거가 여전히 유효한지 LLM이 재검증하여 무효 시 청산 권고합니다.</p>
               <p>8. 진입 실패 시 플랜은 자동으로 <strong>FAILED</strong> 상태로 전환됩니다.</p>
             </div>
           </div>
