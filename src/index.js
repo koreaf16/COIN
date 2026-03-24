@@ -145,6 +145,7 @@ const symbolRotator = new SymbolRotator(config, {
 ruleEngine.onSignal = (signal) => executor.onSignal(signal);
 executor.onTrade = (trade) => tradeRecorder.record(trade);
 eventMonitor.llmScheduler = llmScheduler;  // 이벤트 → 긴급 브리핑+시나리오 연쇄
+llmScheduler.planCache = ruleEngine.planCache; // 플랜 연장 시 인메모리 캐시 즉시 동기화
 
 // ── 시작 ──
 async function start() {
@@ -182,6 +183,7 @@ async function start() {
   executor.start();
 
   // Z4
+  tradeRecorder.startPostExitPoller();
   perfTracker.start();
 
   // API Server (글로벌 참조 — shutdown에서 close)
@@ -213,10 +215,27 @@ async function start() {
 }
 
 let shuttingDown = false;
-async function shutdown() {
+async function shutdown(reason = 'SIGINT') {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log('\n[COIN] Shutting down...');
+  console.log(`\n[COIN] Shutting down (reason=${reason})...`);
+
+  // 데이터 수집 중단 (새 시그널 차단)
+  ruleEngine.stop();
+  llmScheduler.stop();
+  eventMonitor.stop();
+  wsConnector.stop();
+
+  // 오픈 포지션 전체 청산
+  try {
+    const openCount = executor.activePositions?.size || 0;
+    if (openCount > 0) {
+      console.log(`[COIN] Closing ${openCount} open positions before shutdown...`);
+      await executor.closeAllPositions(`SHUTDOWN_${reason}`);
+    }
+  } catch (err) {
+    console.error('[COIN] Position cleanup error:', err.message);
+  }
 
   // Python LLM 프로세스 종료
   if (llmProcess) { try { llmProcess.kill(); } catch {} llmProcess = null; }
@@ -224,8 +243,7 @@ async function shutdown() {
   // API 서버 (포트 2001 해제)
   try { await global._apiServer?.app?.close(); } catch {}
 
-  // 모든 컬렉터/엔진 중지
-  wsConnector.stop();
+  // 나머지 컴포넌트 중지
   tiingoCryptoWs.stop();
   onchainCollector.stop();
   coinglassCollector.stop();
@@ -237,11 +255,9 @@ async function shutdown() {
   macroCollector.stop();
   newsCollector.stop();
   stateVectorBuilder.stop();
-  llmScheduler.stop();
-  eventMonitor.stop();
-  ruleEngine.stop();
   executor.stop();
   perfTracker.stop();
+  tradeRecorder.stop();
   await closeDb();
 
   console.log('[COIN] Shutdown complete — all ports released');
@@ -249,11 +265,18 @@ async function shutdown() {
 }
 
 // Windows + Unix 종료 시그널 모두 처리
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-process.on('SIGHUP', shutdown);
+process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGHUP',  () => shutdown('SIGHUP'));
+process.on('uncaughtException', async (err) => {
+  console.error('[COIN] uncaughtException:', err);
+  await shutdown('UNCAUGHT_EXCEPTION').catch(() => process.exit(1));
+});
+process.on('unhandledRejection', async (reason) => {
+  console.error('[COIN] unhandledRejection:', reason);
+  await shutdown('UNHANDLED_REJECTION').catch(() => process.exit(1));
+});
 process.on('exit', () => {
-  // 강제 종료 시에도 LLM 프로세스 정리
   if (llmProcess) { try { llmProcess.kill(); } catch {} }
 });
 

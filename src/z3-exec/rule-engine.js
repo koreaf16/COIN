@@ -17,7 +17,7 @@ export class RuleEngine {
     this.economicCalendar = opts.economicCalendar || null;
     this.intervalMs = (opts.intervalMs || 1000); // 1초
 
-    this.planCache = new PlanCache({ refreshIntervalSec: opts.cacheRefreshSec || 60 });
+    this.planCache = new PlanCache({ refreshIntervalSec: opts.cacheRefreshSec || 10 });
     this._timer = null;
     this.checkCount = 0;
     this.signalCount = 0;

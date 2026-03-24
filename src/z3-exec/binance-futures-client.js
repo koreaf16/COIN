@@ -284,6 +284,54 @@ export class BinanceFuturesClient {
     }
   }
 
+  /**
+   * 호가창 슬리피지 추정 — 진입 전 유동성 체크
+   * @param {string} symbol
+   * @param {number} quoteQty - 주문 금액 (USDT)
+   * @param {string} side - 'BUY' or 'SELL'
+   * @returns {{ slippagePct: number, depthUsd: number }} 예상 슬리피지(%)와 호가창 총 깊이
+   */
+  async estimateSlippage(symbol, quoteQty, side) {
+    const book = await this._fetchOrderBook(symbol);
+    // BUY → asks (매도호가) 소화, SELL → bids (매수호가) 소화
+    const levels = side === 'BUY' ? book.asks : book.bids;
+    if (!levels.length) return { slippagePct: 0, depthUsd: 0 };
+
+    const bestPrice = parseFloat(levels[0][0]);
+    let remaining = quoteQty;
+    let totalCost = 0;
+    let totalQty = 0;
+    let depthUsd = 0;
+
+    for (const [priceStr, qtyStr] of levels) {
+      const price = parseFloat(priceStr);
+      const qty = parseFloat(qtyStr);
+      const levelValue = price * qty;
+      depthUsd += levelValue;
+
+      if (remaining <= 0) continue;
+
+      const fill = Math.min(remaining, levelValue);
+      const fillQty = fill / price;
+      totalCost += fill;
+      totalQty += fillQty;
+      remaining -= fill;
+    }
+
+    if (totalQty === 0) return { slippagePct: 100, depthUsd };
+    const avgPrice = totalCost / totalQty;
+    const slippagePct = Math.abs(avgPrice - bestPrice) / bestPrice * 100;
+
+    return { slippagePct: parseFloat(slippagePct.toFixed(4)), depthUsd: Math.round(depthUsd) };
+  }
+
+  async _fetchOrderBook(symbol) {
+    const url = `${this.baseUrl}/fapi/v1/depth?symbol=${symbol}&limit=20`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`OrderBook fetch failed: ${res.status}`);
+    return res.json();
+  }
+
   getSymbolInfo(symbol) {
     return this._symbolInfo.get(symbol) || null;
   }

@@ -28,24 +28,26 @@ export class LLMScheduler {
     this.unifiedMode = opts.unifiedMode !== false;  // 기본 ON
     this.unifiedIntervalMs = (opts.unifiedIntervalMin || 1) * 60 * 1000;  // 1분
     this.unifiedProvider = opts.unifiedProvider || 'auto';  // 'local', 'cloud', 'auto'
-    this.unifiedPlanValidMin = opts.unifiedPlanValidMin || 2;  // 플랜 유효시간 2분
+    this.unifiedPlanValidMin = opts.unifiedPlanValidMin || 5;  // 플랜 유효시간 5분
 
-    this._sentTimer = null;
+    this._sentDebounceMs = (opts.sentimentDebounceMs || 10) * 1000;  // 10초 디바운스
+    this._sentDebounceTimer = null;
     this._chainTimer = null;
     this._unifiedTimer = null;
     this._running = false;
     this._unifiedRunning = false;  // 중복 실행 방지
-    this.stats = { sentiments: 0, briefings: 0, scenarios: 0, chains: 0, urgentChains: 0, unifiedPlans: 0, errors: 0 };
+    this._lastSnapshots = new Map(); // symbol -> { price, oi } 캐시용
+    this.planCache = null; // RuleEngine.planCache 참조 (index.js에서 주입)
+    this.stats = { sentiments: 0, briefings: 0, scenarios: 0, chains: 0, urgentChains: 0, unifiedPlans: 0, skippedPlans: 0, errors: 0 };
   }
 
   start() {
     this._running = true;
 
-    // 센티먼트: 15초 후 시작, 매 1분
-    setTimeout(() => {
-      this._runSentiment();
-      this._sentTimer = setInterval(() => this._runSentiment(), this.sentimentIntervalMs);
-    }, 15 * 1000);
+    // 센티먼트: 새 뉴스 기사 도착 시 10초 디바운스 후 실행
+    if (this.newsCollector) {
+      this.newsCollector.onNewArticle = () => this._debounceSentiment();
+    }
 
     if (this.unifiedMode) {
       // ── 통합 모드: 30초 후 즉시 첫 실행, 이후 매 1분 ──
@@ -66,9 +68,14 @@ export class LLMScheduler {
     }
   }
 
+  _debounceSentiment() {
+    if (this._sentDebounceTimer) clearTimeout(this._sentDebounceTimer);
+    this._sentDebounceTimer = setTimeout(() => this._runSentiment(), this._sentDebounceMs);
+  }
+
   stop() {
     this._running = false;
-    if (this._sentTimer) clearInterval(this._sentTimer);
+    if (this._sentDebounceTimer) clearTimeout(this._sentDebounceTimer);
     if (this._chainTimer) clearInterval(this._chainTimer);
     if (this._unifiedTimer) clearInterval(this._unifiedTimer);
     console.log(`[Z2-Sched] Stopped (S=${this.stats.sentiments} unified=${this.stats.unifiedPlans} chains=${this.stats.chains} E=${this.stats.errors})`);
@@ -107,46 +114,87 @@ export class LLMScheduler {
     }
   }
 
-  // ── 통합 모드: 전체 심볼 1회 호출 → 최적 플랜 생성 ──
+  // ── 통합 모드: 심볼을 배치로 나눠 순차 처리 → 전체 심볼 플랜 생성 ──
   async _runUnifiedChain() {
     if (!this._running || this._unifiedRunning) return;
     this._unifiedRunning = true;
+
+    const BATCH_SIZE = 5;
+    let totalSaved = 0;
+    let totalSkipped = 0;
+    let firstBatch = true;
 
     try {
       const eventCalendar = this.economicCalendar?.getNext24h() || [];
       const fearGreed = this.fearGreedCollector?.getData() || {};
       const stablecoin = this.stablecoinCollector?.getData() || {};
 
-      const result = await getUnifiedPlan(
-        this.symbols,
-        eventCalendar,
-        fearGreed,
-        stablecoin,
-        this.unifiedProvider
-      );
+      // [최적화 1] Symbol Pruning: 1시간 거래량 기준 정렬 (데이터 없는 종목 뒤로)
+      const sortedSymbols = [...this.symbols].sort((a, b) => {
+        const snapA = this.newsCollector?.ringBuffer?.getLastKline(a, '1h');
+        const snapB = this.newsCollector?.ringBuffer?.getLastKline(b, '1h');
+        return (snapB?.volume || 0) - (snapA?.volume || 0);
+      });
 
-      if (!result || result.confidence < 0.3) {
-        console.log(`[Z2-Sched] Unified: low confidence (${result?.confidence || 0}), skipped`);
-        return;
+      // 심볼을 BATCH_SIZE씩 나눠 순차 처리
+      for (let i = 0; i < sortedSymbols.length; i += BATCH_SIZE) {
+        if (!this._running) break;
+        const batch = sortedSymbols.slice(i, i + BATCH_SIZE);
+
+        // [최적화 2] Logical Caching: 핵심 데이터 변화가 미미한 심볼 제외
+        const filteredBatch = [];
+        for (const sym of batch) {
+          const current = this.newsCollector?.ringBuffer?.getSnapshot(sym);
+          const last = this._lastSnapshots.get(sym);
+
+          if (last && current && current.price && current.derivatives) {
+            const priceChange = Math.abs(current.price - last.price) / last.price;
+            const oiChange = Math.abs((current.derivatives.open_interest || 0) - (last.oi || 0)) / (last.oi || 1e-9);
+
+            // 가격 0.1% 미만 & OI 1% 미만 변화 시 기존 플랜 연장 후 건너뜀
+            if (priceChange < 0.001 && oiChange < 0.01) {
+              await this._extendPlanForSymbol(sym);
+              console.log(`[Z2-Sched] Skip LLM for ${sym} (Price $\Delta$=${(priceChange * 100).toFixed(3)}%, OI $\Delta$=${(oiChange * 100).toFixed(3)}%) - Plan extended`);
+              totalSkipped++;
+              continue;
+            }
+          }
+          filteredBatch.push(sym);
+          // 캐시 업데이트
+          if (current && current.derivatives) {
+            this._lastSnapshots.set(sym, {
+              price: current.price,
+              oi: current.derivatives.open_interest || 0
+            });
+          }
+        }
+
+        if (filteredBatch.length === 0) continue;
+
+        let result;
+        try {
+          result = await getUnifiedPlan(filteredBatch, eventCalendar, fearGreed, stablecoin, this.unifiedProvider);
+        } catch (err) {
+          console.error(`[Z2-Sched] Batch [${filteredBatch.join(',')}] error:`, err.message);
+          this.stats.errors++;
+          continue;
+        }
+
+        const plans = (result?.plans || []).filter(p => p.symbol && p.direction);
+        
+        for (const plan of plans) {
+          // 신규 플랜 저장 전 해당 종목의 기존 ACTIVE 플랜만 만료 처리 (Surgical Expire)
+          await this._expirePlanForSymbol(plan.symbol);
+          await this._saveUnifiedPlan(plan, result.confidence);
+          totalSaved++;
+        }
       }
 
-      // 기존 ACTIVE 플랜 만료 처리 (새 플랜으로 교체)
-      await this._expireOldPlans();
-
-      // 분석 결과 저장
-      await this._saveAnalysis(null, 'unified_plan', result, this.unifiedProvider === 'cloud' ? 'cloud' : 'local');
-
-      // 각 플랜 저장
-      const plans = result.plans || [];
-      let savedCount = 0;
-      for (const plan of plans) {
-        if (!plan.symbol || !plan.direction) continue;
-        await this._saveUnifiedPlan(plan, result.confidence);
-        savedCount++;
+      this.stats.skippedPlans += totalSkipped;
+      if (totalSaved > 0 || totalSkipped > 0) {
+        this.stats.unifiedPlans++;
+        console.log(`[Z2-Sched] Unified cycle: saved=${totalSaved}, cached_skip=${totalSkipped}`);
       }
-
-      this.stats.unifiedPlans++;
-      console.log(`[Z2-Sched] Unified: ${savedCount} plans saved (conf=${result.confidence}, summary=${result.market_summary || ''})`);
 
     } catch (err) {
       this.stats.errors++;
@@ -156,21 +204,47 @@ export class LLMScheduler {
     }
   }
 
-  /** 기존 ACTIVE 플랜 일괄 만료 (새 분석으로 교체) */
-  async _expireOldPlans() {
+  /** 특정 종목의 ACTIVE 플랜 유효시간 연장 (데이터 변화 없을 때) */
+  async _extendPlanForSymbol(symbol) {
+    const conn = await getPool().getConnection();
+    try {
+      await conn.execute(
+        `UPDATE z2_execution_plan
+         SET valid_until = SYSTIMESTAMP + NUMTODSINTERVAL(:validMin, 'MINUTE')
+         WHERE symbol = :sym AND status = 'ACTIVE'`,
+        { sym: symbol, validMin: this.unifiedPlanValidMin },
+        { autoCommit: true }
+      );
+      // 인메모리 캐시도 즉시 동기화 (DB↔캐시 불일치 방지)
+      if (this.planCache) {
+        this.planCache.extendPlans(symbol, Date.now() + this.unifiedPlanValidMin * 60 * 1000);
+      }
+    } catch (err) {
+      console.error(`[Z2-Sched] Failed to extend plan for ${symbol}:`, err.message);
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /** 특정 종목의 기존 ACTIVE 플랜만 만료 처리 (새 플랜 저장 전) */
+  async _expirePlanForSymbol(symbol) {
     const conn = await getPool().getConnection();
     try {
       await conn.execute(
         `UPDATE z2_execution_plan SET status = 'EXPIRED'
-         WHERE status = 'ACTIVE' AND valid_until > SYSTIMESTAMP`,
-        {}, { autoCommit: true }
+         WHERE symbol = :sym AND status = 'ACTIVE'`,
+        { sym: symbol },
+        { autoCommit: true }
       );
+    } catch (err) {
+      console.error(`[Z2-Sched] Failed to expire plan for ${symbol}:`, err.message);
     } finally {
       await conn.close();
     }
   }
 
   /** 통합 플랜 DB 저장 */
+
   async _saveUnifiedPlan(plan, overallConfidence) {
     const conn = await getPool().getConnection();
     try {

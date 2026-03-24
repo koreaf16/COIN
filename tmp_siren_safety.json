@@ -1,0 +1,33 @@
+[
+  {
+    "ID": 73069525,
+    "SYMBOL": "SIRENUSDT",
+    "ENTRY_TIME": "2026-03-23T14:18:37.365Z",
+    "EXIT_TIME": "2026-03-23T14:21:14.212Z",
+    "EXIT_REASON": "SAFETY_STOP",
+    "ENTRY_PRICE": 2.38249,
+    "EXIT_PRICE": 2.43804,
+    "PNL_AMOUNT": -5.064347938501295,
+    "ENTRY_REASONING": {
+      "planId": 427,
+      "details": [
+        {
+          "field": "price",
+          "operator": "<=",
+          "expected": 2.41,
+          "actual": 2.3824899999999998,
+          "met": true
+        },
+        {
+          "field": "funding_rate",
+          "operator": "<",
+          "expected": -0.001,
+          "actual": -0.00170647,
+          "met": true
+        }
+      ],
+      "reasoning": "SIRENUSDT 는 가격 2.40571 에서 펀딩비 -0.00181636 으로 숏 포지션이 우세하며, CVD 1 시간 -2687777.0 으로 강력한 매도 압력이 확인됨. OI 변화율 -12.2% 로 공매도 청산이 진행 중이며, ATR 14 가 0.6145 로 변동성이 높음. 목표가 2.28 은 ATR 의 약 0.2 배 하락폭으로 현실적이며, 손절가 2.50 은 R:R 1.5 이상을 확보함."
+    },
+    "SAFETY_STOP": 2.4301398
+  }
+]

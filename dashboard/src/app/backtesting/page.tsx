@@ -122,13 +122,14 @@ export default function BacktestingPage() {
                 <th className="p-3">방향</th>
                 <th className="p-3 text-right">진입가</th>
                 <th className="p-3 text-right">청산가</th>
+                <th className="p-3 text-right">투입금</th>
                 <th className="p-3 text-right">손익</th>
                 <th className="p-3">사유</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {trades.length === 0 ? (
-                <tr><td colSpan={7} className="p-6 text-center text-outline">거래 내역이 없습니다.</td></tr>
+                <tr><td colSpan={8} className="p-6 text-center text-outline">거래 내역이 없습니다.</td></tr>
               ) : trades.slice(0, 20).map((t, i) => (
                 <tr
                   key={i}
@@ -140,6 +141,9 @@ export default function BacktestingPage() {
                   <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${t.direction === 'LONG' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'}`}>{t.direction}</span></td>
                   <td className="p-3 text-right font-mono">${fmtPrice(t.entry_price)}</td>
                   <td className="p-3 text-right font-mono">{t.exit_price ? `$${fmtPrice(t.exit_price)}` : '--'}</td>
+                  <td className="p-3 text-right font-mono text-outline text-xs">
+                    {t.notional != null ? `$${Number(t.notional).toFixed(0)}` : '--'}
+                  </td>
                   <td className={`p-3 text-right font-bold ${(t.pnl_amount || 0) >= 0 ? 'text-success' : 'text-error'}`}>
                     {t.pnl_amount != null ? `${t.pnl_amount >= 0 ? '+' : ''}$${Math.abs(t.pnl_amount).toFixed(2)}` : '--'}
                   </td>

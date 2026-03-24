@@ -347,7 +347,7 @@ async function main() {
     const r = await query(conn, `
       SELECT symbol, timeframe, COUNT(*) as cnt
       FROM z0_price_ohlcv
-      WHERE ts > SYSTIMESTAMP - INTERVAL '5' MINUTE
+      WHERE ts > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '5' MINUTE
       GROUP BY symbol, timeframe
       ORDER BY symbol, timeframe
     `);
@@ -366,7 +366,7 @@ async function main() {
     const r = await query(conn, `
       SELECT symbol, COUNT(*) as cnt
       FROM z0_derivatives
-      WHERE ts > SYSTIMESTAMP - INTERVAL '5' MINUTE
+      WHERE ts > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '5' MINUTE
       GROUP BY symbol
     `);
     if (!r.ok) {
@@ -381,7 +381,7 @@ async function main() {
     const r = await query(conn, `
       SELECT symbol, COUNT(*) as cnt
       FROM z1_market_states
-      WHERE ts > SYSTIMESTAMP - INTERVAL '10' MINUTE
+      WHERE ts > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '10' MINUTE
       GROUP BY symbol
     `);
     if (!r.ok) {

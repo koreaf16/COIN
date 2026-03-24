@@ -262,7 +262,7 @@ export class StateVectorBuilder {
        FROM z0_derivatives
        WHERE symbol = :sym
          AND funding_rate IS NOT NULL
-         AND ts > SYSTIMESTAMP - INTERVAL '30' DAY`,
+         AND ts > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '30' DAY`,
       { sym: symbol }
     );
     const statsRow = statsResult.rows?.[0];
@@ -366,7 +366,7 @@ export class StateVectorBuilder {
       // next_1h_return이 null이고 ts가 1시간 이상 지난 레코드만
       const rows = await conn.execute(
         `SELECT id, symbol, ts FROM z1_market_states
-         WHERE next_1h_return IS NULL AND ts < SYSTIMESTAMP - INTERVAL '1' HOUR
+         WHERE next_1h_return IS NULL AND ts < CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '1' HOUR
          FETCH FIRST 200 ROWS ONLY`,
         {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
       );

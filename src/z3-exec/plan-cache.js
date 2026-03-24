@@ -9,7 +9,7 @@ import { getPool } from '../shared/db.js';
 
 export class PlanCache {
   constructor(opts = {}) {
-    this.refreshIntervalMs = (opts.refreshIntervalSec || 60) * 1000;
+    this.refreshIntervalMs = (opts.refreshIntervalSec || 15) * 1000;
     this.plans = new Map(); // symbol → [plan, plan, ...]
     this._timer = null;
     this.lastRefresh = 0;
@@ -24,9 +24,11 @@ export class PlanCache {
     if (this._timer) clearInterval(this._timer);
   }
 
-  /** 특정 심볼의 ACTIVE 플랜 목록 */
+  /** 특정 심볼의 ACTIVE 플랜 목록 (만료된 캐시 자동 제거) */
   getActivePlans(symbol) {
-    return this.plans.get(symbol) || [];
+    const plans = this.plans.get(symbol) || [];
+    const now = Date.now();
+    return plans.filter(p => !p.validUntil || p.validUntil > now);
   }
 
   /** 전체 ACTIVE 플랜 수 */
@@ -34,6 +36,15 @@ export class PlanCache {
     let count = 0;
     for (const plans of this.plans.values()) count += plans.length;
     return count;
+  }
+
+  /** 특정 심볼의 인메모리 validUntil 즉시 갱신 (DB 연장과 동기화) */
+  extendPlans(symbol, newValidUntilMs) {
+    const plans = this.plans.get(symbol);
+    if (!plans) return;
+    for (const p of plans) {
+      p.validUntil = newValidUntilMs;
+    }
   }
 
   /** 플랜 상태 업데이트 (TRIGGERED) */
@@ -63,33 +74,33 @@ export class PlanCache {
         // 만료된 플랜 자동 EXPIRED 처리
         await conn.execute(
           `UPDATE z2_execution_plan SET status = 'EXPIRED'
-           WHERE status = 'ACTIVE' AND valid_until < SYSTIMESTAMP`,
+           WHERE status = 'ACTIVE' AND valid_until < CAST(SYSTIMESTAMP AS TIMESTAMP)`,
           {}, { autoCommit: true }
         );
 
         // ACTIVE 플랜 조회
         const result = await conn.execute(
           `SELECT id, symbol, direction, entry_conditions, target_price, stop_price,
-                  stop_conditions, time_stop_min, confidence, reasoning
+                  stop_conditions, time_stop_min, confidence, reasoning, valid_until
            FROM z2_execution_plan
-           WHERE status = 'ACTIVE' AND valid_until > SYSTIMESTAMP
+           WHERE status = 'ACTIVE' AND valid_until > CAST(SYSTIMESTAMP AS TIMESTAMP)
            ORDER BY confidence DESC`,
           {},
           { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
 
-        this.plans.clear();
+        // Atomic swap: 새 Map을 완성한 후 한 번에 교체 (clear() 중 빈 캐시 방지)
+        const newPlans = new Map();
         for (const row of (result.rows || [])) {
           const symbol = row.SYMBOL;
-          if (!this.plans.has(symbol)) this.plans.set(symbol, []);
+          if (!newPlans.has(symbol)) newPlans.set(symbol, []);
 
           let entryConditions = row.ENTRY_CONDITIONS;
           let stopConditions = row.STOP_CONDITIONS;
-          // JSON 파싱 (Oracle JSON → JS object)
           if (typeof entryConditions === 'string') entryConditions = JSON.parse(entryConditions);
           if (typeof stopConditions === 'string') stopConditions = JSON.parse(stopConditions);
 
-          this.plans.get(symbol).push({
+          newPlans.get(symbol).push({
             id: row.ID,
             symbol,
             direction: row.DIRECTION,
@@ -100,8 +111,10 @@ export class PlanCache {
             timeStopMin: row.TIME_STOP_MIN,
             confidence: row.CONFIDENCE,
             reasoning: row.REASONING,
+            validUntil: row.VALID_UNTIL instanceof Date ? row.VALID_UNTIL.getTime() : null,
           });
         }
+        this.plans = newPlans;
 
         this.lastRefresh = Date.now();
       } finally {

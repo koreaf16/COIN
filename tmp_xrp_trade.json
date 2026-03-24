@@ -1,0 +1,53 @@
+{
+  "id": 1576876395,
+  "symbol": "XRPUSDT",
+  "direction": "SHORT",
+  "entry_price": 1.4126,
+  "entry_time": "2026-03-23T12:16:37.509Z",
+  "exit_price": 1.4142,
+  "exit_time": "2026-03-23T12:19:21.832Z",
+  "exit_reason": "INVALIDATION",
+  "pnl_pct": -0.1132663174288421,
+  "pnl_amount": -0.40568988799997385,
+  "entry_reasoning": {
+    "planId": 402,
+    "details": [
+      {
+        "field": "cvd_direction",
+        "operator": "<",
+        "expected": -0.5,
+        "actual": -0.9943266087807969,
+        "met": true
+      },
+      {
+        "field": "funding_rate",
+        "operator": ">=",
+        "expected": 0,
+        "actual": 0,
+        "met": true
+      }
+    ],
+    "reasoning": "롱 비율 69.78%로 과도한 롱 편중 상태에서 CVD 1시간 -1,018,139.8로 강한 매도 압력 확인. 가격 방향 DOWN이나 OI 변화율 0.95%로 거의 플랫하여 아직 롱 포지션이 본격적으로 청산되지 않은 상태. 펀딩비 0.00005738로 거의 중립이지만 예측 펀딩 0.0으로 하락 전환 시그널. 공포탐욕지수 8(극단적 공포)과 VIX 24.84 고변동성 환경에서 과밀 롱 포지션 청산 가능성 높음. ATR 0.0158 기준 1.5배 하락 목표 1.3914, 손절 1.4309 설정 (R:R = 1.5:1). BB폭 2.18로 중간 변동성 구간이나 추가 확대 가능."
+  },
+  "exit_details": {
+    "checks": [
+      {
+        "reason": "ENTRY REASONING 데이터가 비어 있어 검증 불가",
+        "status": "INVALID",
+        "current_value": "{}",
+        "explanation": "입력된 ENTRY REASONING 필드가 비어 있어 현재 시장 데이터와 비교할 수 있는 기준이 없습니다."
+      },
+      {
+        "reason": "현재 시장 데이터는 유효하나 진입 근거 없음",
+        "status": "INVALID",
+        "current_value": "price: 1.4134, funding_rate: 0.00005738",
+        "explanation": "현재 가격은 1.4134이며 펀딩비 0.00005738로 양수이나, 진입을 위한 구체적인 논리가 제공되지 않았습니다."
+      }
+    ],
+    "valid_count": 0,
+    "invalid_count": 2,
+    "recommendation": "FULL_EXIT",
+    "reasoning": "ENTRY REASONING 필드가 비어 있어 기존 진입 논리의 유효성을 검증할 수 없습니다. 현재 시장 데이터 (가격 1.4134, OI 변화율 0.049%) 는 존재하지만, 이를 바탕으로 한 진입 근거가 없으므로 포지션을 유지할 수 없습니다.",
+    "confidence": 0.1
+  }
+}

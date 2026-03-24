@@ -34,6 +34,7 @@ export class NewsCollector {
     this.recentNews = [];       // Z2 LLM 분석용
     this.maxRecentNews = 100;   // Pro니까 넉넉하게
     this.recentMacroNews = [];  // 매크로 뉴스 별도
+    this.onNewArticle = null;   // 새 기사 콜백 (LLMScheduler용)
   }
 
   start() {
@@ -84,9 +85,12 @@ export class NewsCollector {
       const articles = await res.json();
       this.stats.fetched += articles.length;
 
+      let hasNew = false;
       for (const article of articles) {
-        await this._processArticle(article, 'crypto');
+        const inserted = await this._processArticle(article, 'crypto');
+        if (inserted) hasNew = true;
       }
+      if (hasNew) this.onNewArticle?.();  // 폴링 완료 후 1회만 콜백
     } catch (err) {
       this.stats.errors++;
       if (this.stats.errors % 10 === 1) {
@@ -110,9 +114,12 @@ export class NewsCollector {
       const articles = await res.json();
       this.stats.macroFetched += articles.length;
 
+      let hasNew = false;
       for (const article of articles) {
-        await this._processArticle(article, 'macro');
+        const inserted = await this._processArticle(article, 'macro');
+        if (inserted) hasNew = true;
       }
+      if (hasNew) this.onNewArticle?.();  // 폴링 완료 후 1회만 콜백
     } catch (err) {
       // 매크로 뉴스 실패는 경고만
     }
@@ -120,7 +127,7 @@ export class NewsCollector {
 
   async _processArticle(article, category) {
     const hash = crypto.createHash('md5').update(article.title || '').digest('hex');
-    if (this.seenHashes.has(hash)) { this.stats.duplicates++; return; }
+    if (this.seenHashes.has(hash)) { this.stats.duplicates++; return false; }
     this.seenHashes.add(hash);
     if (this.seenHashes.size > this.maxSeen) {
       const first = this.seenHashes.values().next().value;
@@ -156,7 +163,7 @@ export class NewsCollector {
       }
     } catch (err) {
       this.stats.errors++;
-      return;
+      return false;
     }
 
     // 캐시 업데이트
@@ -169,5 +176,7 @@ export class NewsCollector {
       this.recentMacroNews.unshift(newsItem);
       if (this.recentMacroNews.length > 30) this.recentMacroNews.length = 30;
     }
+
+    return true;
   }
 }

@@ -8,7 +8,7 @@
 const BINANCE_TICKER_URL = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
 const ROTATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4시간
 const FLEX_COUNT = 10;
-const MIN_VOLUME_USD = 50_000_000;  // 최소 일 거래량 $50M
+const MIN_VOLUME_USD = 150_000_000;  // 최소 일 거래량 $150M (슬리피지 방지)
 const MIN_ATR_PCT = 2.5;            // 최소 일 ATR 2.5%
 
 // 제외 목록: 주식/금속/스테이블/USDC 페어/분기 선물

@@ -89,7 +89,7 @@ export class CoinglassCollector {
     try {
       // 기존 데이터 정리 후 새로 INSERT
       await conn.execute(
-        'DELETE FROM z1_liquidation_map WHERE symbol = :sym AND ts > SYSTIMESTAMP - INTERVAL \'1\' HOUR',
+        'DELETE FROM z1_liquidation_map WHERE symbol = :sym AND ts > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL \'1\' HOUR',
         { sym: symbol }
       );
 

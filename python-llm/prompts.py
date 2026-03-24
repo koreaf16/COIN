@@ -18,24 +18,60 @@ RULES:
    NEVER write reasoning in English."""
 
 
+# ── Qwen 전용 시스템 프롬프트 (LM Studio KV cache 최적화) ──
+# 정적 규칙/출력포맷을 시스템 프롬프트에 포함 → 매 호출 KV cache 프리픽스 재사용
+
+QWEN_SENTIMENT_SYSTEM = """You are an expert crypto news sentiment analyst.
+You analyze news headlines and produce structured JSON outputs.
+
+RULES:
+1. Output ONLY valid JSON (no markdown, no explanation outside JSON)
+2. Include a "confidence" field (0.0-1.0) in every response
+3. Never hallucinate — only reference what is provided in the input
+4. If data is insufficient, set confidence below 0.5
+
+Output JSON format:
+{
+  "sentiment": "<float -1.0 to 1.0>",
+  "intensity": "<low|medium|high>",
+  "key_topic": "<main topic in 5 words>",
+  "source_count": "<int>",
+  "confidence": "<float 0-1>"
+}"""
+
+QWEN_VALIDATE_SYSTEM = """You are an expert crypto position validator.
+You check if the fundamental market premise for an open position is still valid.
+
+RULES:
+1. Output ONLY valid JSON (no markdown, no explanation outside JSON)
+2. Include a "confidence" field (0.0-1.0) in every response
+3. Never hallucinate numbers — only reference values provided in the input
+4. Write ALL "reasoning", "explanation" fields in Korean (한국어).
+5. Ignore exact 'price' entry conditions. Price fluctuations are managed by Stop-Loss and Take-Profit.
+6. Focus ONLY on fundamental metrics (CVD, OI, Funding Rate, Macro, Volume) mentioned in the reasoning.
+7. If the fundamental bearish/bullish premise is still intact, recommend HOLD.
+8. Only recommend FULL_EXIT if the core thesis has fundamentally reversed.
+
+Output JSON format:
+{
+  "checks": [
+    {"reason": "<한국어 근거>", "status": "<VALID|INVALID>", "current_value": "<val>", "explanation": "<한국어 설명>"}
+  ],
+  "valid_count": "<int>",
+  "invalid_count": "<int>",
+  "recommendation": "<HOLD|PARTIAL_EXIT|FULL_EXIT>",
+  "reasoning": "<한국어로 종합 판단>",
+  "confidence": "<0-1>"
+}"""
+
+
 def build_sentiment_prompt(news_items: list[dict]) -> str:
     news_text = "\n".join([
         f"- [{n.get('source','?')}] {n.get('title','')}"
         for n in news_items[:20]
     ])
-    return f"""Analyze the sentiment of these recent crypto news headlines.
-
-NEWS:
-{news_text}
-
-Output JSON:
-{{
-  "sentiment": <float -1.0 to 1.0>,
-  "intensity": "<low|medium|high>",
-  "key_topic": "<main topic in 5 words>",
-  "source_count": <int>,
-  "confidence": <float 0-1>
-}}"""
+    return f"""NEWS:
+{news_text}"""
 
 
 def build_briefing_prompt(snapshot: dict, sentiment: dict | None, similar_states: dict | None) -> str:
@@ -130,58 +166,80 @@ Output JSON:
 }}"""
 
 
+# ── DeepSeek 전용 시스템 프롬프트 (프리픽스 캐싱 최적화) ──
+# 정적 규칙/포맷을 시스템 프롬프트에 포함 → 매 호출 100% 캐시 히트
+DEEPSEEK_UNIFIED_PLAN_SYSTEM = """You are an expert crypto derivatives trading analyst.
+You analyze market data and produce structured JSON outputs.
+
+RULES:
+1. Always include specific numerical values from the data in your reasoning
+2. Output ONLY valid JSON (no markdown, no explanation outside JSON)
+3. Include a "confidence" field (0.0-1.0) in every response
+4. If data is insufficient, set confidence below 0.5
+5. Never hallucinate numbers — only reference values provided in the input
+6. CRITICAL: Write ALL "reasoning", "summary", "explanation" fields in Korean (한국어).
+   Include specific data values in Korean text. Example: "펀딩비 -0.0005로 숏 과밀, OI 2.3% 감소로 매도 압력 확인"
+   NEVER write reasoning in English.
+
+TASK: Generate ONE execution plan per symbol for ALL provided symbols.
+
+PLAN RULES:
+1. Generate exactly ONE plan for EVERY symbol — no symbol may be skipped.
+2. For each symbol determine the better direction (LONG or SHORT) based on data.
+3. target_price must be realistic based on ATR — do NOT set unreachable targets
+4. Risk:Reward (target distance / stop distance) >= 1.5
+5. Cross-symbol logic: if BTC is bearish, prefer SHORT on weaker alts
+6. stop_conditions: Provide logical invalidation rules (e.g., if funding_rate or cvd_direction reverses)
+7. CRITICAL TIMING: Plans expire in 5 minutes. Entry conditions MUST be achievable within 5 minutes at current market speed.
+   - Do NOT set price conditions far from current price. Keep entry_price within ±0.3% of current price.
+   - Focus on non-price conditions (funding_rate, cvd_direction, oi_change_pct, volume_surge) that can trigger quickly.
+   - If no clear setup exists, set entry near current price with tight stop — the system will extend unchanged plans automatically.
+
+Operators: "<", ">", "<=", ">=", "==", "in"
+Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio)
+
+Output JSON:
+{
+  "plans": [
+    {
+      "symbol": "<SYMBOL>",
+      "direction": "<LONG|SHORT>",
+      "entry_conditions": {
+        "price": {"op": "<=", "value": 68000},
+        "funding_rate": {"op": "<", "value": 0.0001}
+      },
+      "target_price": "<number - REQUIRED, realistic based on ATR>",
+      "stop_price": "<number - REQUIRED, invalidation level>",
+      "stop_conditions": {
+        "funding_rate": {"op": ">", "value": 0.0005}
+      },
+      "time_stop_min": "<int>",
+      "reasoning": "<한국어 — 반드시 구체적 수치, 크로스심볼 비교, 목표가/손절가 근거 포함>"
+    }
+  ],
+  "market_summary": "<한국어 1-2문장 전체 시장 요약>",
+  "confidence": "<0-1>"
+}"""
+
+
 def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
                               event_calendar: list | None = None,
                               fear_greed: dict | None = None,
                               stablecoin: dict | None = None) -> str:
-    """모든 심볼을 하나의 컨텍스트에서 분석 → 최적 플랜만 생성"""
+    """유저 메시지 = 동적 데이터만 (정적 규칙은 시스템 프롬프트에 포함)"""
     symbols_text = json.dumps(all_snapshots, indent=2, default=str)
     macro_text = json.dumps(macro, indent=2, default=str) if macro else "N/A"
     cal_text = json.dumps(event_calendar, indent=2) if event_calendar else "None"
     fg_text = json.dumps(fear_greed, indent=2) if fear_greed else "N/A"
     sc_text = json.dumps(stablecoin, indent=2) if stablecoin else "N/A"
 
-    return f"""Analyze ALL symbols below and generate execution plans for the BEST opportunities only.
-
-SYMBOLS DATA (each key = symbol):
+    return f"""SYMBOLS DATA (each key = symbol):
 {symbols_text}
 
 MACRO: {macro_text}
 EVENTS_24H: {cal_text}
 FEAR_GREED: {fg_text}
-STABLECOIN: {sc_text}
-
-RULES:
-1. Compare symbols RELATIVELY — pick ONLY the strongest setups (max 5 plans total)
-2. Skip symbols with no clear edge. Generating 0 plans is acceptable.
-3. A trade MUST be able to profit at least 0.20% raw (after 0.08% round-trip fee = 0.12% net minimum)
-4. target_price must be realistic based on ATR — do NOT set unreachable targets
-5. Risk:Reward (target distance / stop distance) >= 1.5
-6. Cross-symbol logic: if BTC is bearish, prefer SHORT on weaker alts rather than SHORT BTC itself
-
-Operators: "<", ">", "<=", ">=", "==", "in"
-Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio)
-
-Output JSON:
-{{
-  "plans": [
-    {{
-      "symbol": "<SYMBOL>",
-      "direction": "<LONG|SHORT>",
-      "entry_conditions": {{
-        "price": {{"op": "<=", "value": 68000}},
-        "funding_rate": {{"op": "<", "value": 0.0001}}
-      }},
-      "target_price": <number - REQUIRED, realistic based on ATR>,
-      "stop_price": <number - REQUIRED, invalidation level>,
-      "stop_conditions": {{}},
-      "time_stop_min": <int>,
-      "reasoning": "<한국어 — 반드시 구체적 수치, 크로스심볼 비교, 목표가/손절가 근거 포함>"
-    }}
-  ],
-  "market_summary": "<한국어 1-2문장 전체 시장 요약>",
-  "confidence": <0-1>
-}}"""
+STABLECOIN: {sc_text}"""
 
 
 def build_event_interpret_prompt(event_text: str, snapshot: dict) -> str:
@@ -208,25 +266,5 @@ Output JSON:
 def build_validate_position_prompt(entry_reasoning: dict, current_snapshot: dict) -> str:
     entry = json.dumps(entry_reasoning, indent=2, default=str)
     current = json.dumps(current_snapshot, indent=2, default=str)
-    return f"""Validate if the fundamental market premise for this position is still valid.
-
-CRITICAL INSTRUCTION:
-- Ignore exact 'price' entry conditions. Price fluctuations are managed by Stop-Loss and Take-Profit.
-- Focus ONLY on fundamental metrics (CVD, OI, Funding Rate, Macro, Volume) mentioned in the reasoning.
-- If the fundamental bearish/bullish premise is still intact, recommend HOLD.
-- Only recommend FULL_EXIT if the core thesis has fundamentally reversed.
-
-ENTRY REASONING: {entry}
-CURRENT MARKET: {current}
-
-Output JSON:
-{{
-  "checks": [
-    {{"reason": "<한국어 근거>", "status": "<VALID|INVALID>", "current_value": "<val>", "explanation": "<한국어 설명>"}}
-  ],
-  "valid_count": <int>,
-  "invalid_count": <int>,
-  "recommendation": "<HOLD|PARTIAL_EXIT|FULL_EXIT>",
-  "reasoning": "<한국어로 종합 판단>",
-  "confidence": <0-1>
-}}"""
+    return f"""ENTRY REASONING: {entry}
+CURRENT MARKET: {current}"""

@@ -15,15 +15,14 @@
  * 경로 7: LLM 타겟 도달 (비현실적이면 ATR 타겟이 먼저 발동)
  */
 
-import { validatePosition } from '../z2-intel/llm-client.js';
 
 export class SmartExit {
   constructor(opts = {}) {
-    this.validateIntervalMs = (opts.validateIntervalSec || 30) * 1000;
+    this.validateIntervalMs = (opts.validateIntervalSec || 180) * 1000;
     this.roundTripFeePct = opts.roundTripFeePct || 0.08;
     this.trailRetraceRatio = opts.trailRetraceRatio || 0.4;
     this.atrMultiplier = opts.atrMultiplier || 2.0;     // ATR 타겟 = 진입가 ± 2×ATR
-    this.minTargetPct = opts.minTargetPct || this.roundTripFeePct * 2.5; // ATR 타겟 최소 수익률 (수수료×2.5 = 0.20%)
+    this.minTargetPct = opts.minTargetPct || this.roundTripFeePct * 5; // ATR 타겟 최소 수익률 (수수료×5 = 0.40%)
     this.momentumBars = opts.momentumBars || 3;          // 반전 감지 봉 수
     this.ringBuffer = opts.ringBuffer || null;            // Z0 RingBuffer 참조
     this._validateTimers = new Map();
@@ -32,40 +31,10 @@ export class SmartExit {
     this._priceHistory = new Map();   // positionId → [prices...] (100ms 샘플)
   }
 
-  /** 포지션 열릴 때 검증 스케줄 시작 */
+  /** 포지션 열릴 때 모니터링 시작 (LLM 검증 제거 — stop_conditions/SL/TP로 대체) */
   startValidation(position, onExit) {
     this._bestPnlPct.set(position.id, 0);
     this._priceHistory.set(position.id, []);
-
-    // 진입 논리가 없으면 (예: 수동 거래 복구 등) LLM 논리 검증 생략
-    if (!position.entryReasoning || !position.entryReasoning.reasoning) {
-      console.log(`[Z3-Exit] Skipping LLM validation for ${position.symbol} (no entry reasoning)`);
-      return;
-    }
-
-    const timer = setInterval(async () => {
-      try {
-        const result = await validatePosition(
-          position.symbol,
-          position.id,
-          position.entryReasoning || {}
-        );
-
-        if (result.recommendation === 'FULL_EXIT') {
-          console.log(`[Z3-Exit] INVALIDATION: ${position.symbol} — ${result.reasoning}`);
-          onExit('INVALIDATION', result);
-          this.stopValidation(position.id);
-        } else if (result.recommendation === 'PARTIAL_EXIT') {
-          console.log(`[Z3-Exit] PARTIAL_EXIT: ${position.symbol} — ${result.reasoning}`);
-          onExit('PARTIAL_EXIT', result);
-          // 검증 계속 (잔여 포지션 모니터링)
-        }
-      } catch (err) {
-        // 검증 실패 시 포지션 유지 (보수적)
-      }
-    }, this.validateIntervalMs);
-
-    this._validateTimers.set(position.id, timer);
   }
 
   /** 포지션 닫힐 때 검증 중단 */
@@ -128,7 +97,7 @@ export class SmartExit {
       : ((entry - currentPrice) / entry) * 100;
     const netPnlPct = rawPnlPct - this.roundTripFeePct;
 
-    // ── 경로 1: ATR 동적 타겟 (최소 수수료×2.5 보장) ──
+    // ── 경로 1: ATR 동적 타겟 (최소 수수료×2.5 보장 + 순이익 검증) ──
     const atr = this._getATR(position.symbol);
     if (atr && atr > 0) {
       // ATR 기반 거리와 최소 수익률 거리 중 큰 쪽 사용
@@ -136,13 +105,15 @@ export class SmartExit {
       const minDist = entry * this.minTargetPct / 100;
       const targetDist = Math.max(atrDist, minDist);
       const atrTarget = isLong ? entry + targetDist : entry - targetDist;
-      if (isLong && currentPrice >= atrTarget) {
-        console.log(`[Z3-Exit] ATR_TARGET: ${position.symbol} price=$${currentPrice.toFixed(4)} >= atrTarget=$${atrTarget.toFixed(4)} (ATR=${atr.toFixed(4)}, dist=${targetDist.toFixed(4)})`);
-        return 'ATR_TARGET';
-      }
-      if (!isLong && currentPrice <= atrTarget) {
-        console.log(`[Z3-Exit] ATR_TARGET: ${position.symbol} price=$${currentPrice.toFixed(4)} <= atrTarget=$${atrTarget.toFixed(4)} (ATR=${atr.toFixed(4)}, dist=${targetDist.toFixed(4)})`);
-        return 'ATR_TARGET';
+      const atrReached = isLong ? currentPrice >= atrTarget : currentPrice <= atrTarget;
+      if (atrReached) {
+        // 순이익이 수수료의 1.5배 이상일 때만 ATR_TARGET 발동
+        // (가격이 도달했어도 슬리피지/수수료로 순손실이면 청산 안 함)
+        if (netPnlPct >= this.roundTripFeePct * 1.5) {
+          console.log(`[Z3-Exit] ATR_TARGET: ${position.symbol} price=$${currentPrice.toFixed(4)} target=$${atrTarget.toFixed(4)} netPnl=${netPnlPct.toFixed(3)}% (ATR=${atr.toFixed(4)})`);
+          return 'ATR_TARGET';
+        }
+        // 가격 도달했지만 수수료 미달 → 트레일링으로 위임 (로그만)
       }
     }
 

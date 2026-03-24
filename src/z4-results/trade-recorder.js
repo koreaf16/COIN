@@ -2,16 +2,27 @@
  * Z4 Trade Recorder — 포지션/거래 DB 기록
  *
  * EXIT 시 1초봉 데이터 캡처:
- *   - 즉시: 진입 5분전 ~ 청산 시점까지 캡처
- *   - 5분 후: 청산 후 5분 데이터 추가 캡처하여 최종 저장
+ *   - 즉시: 진입 5분전 ~ 청산 시점까지 캡처 → DB 저장 (candle_post_exit=0)
+ *   - 10초마다 폴링: 청산 70초 경과 건 → 기존 캔들에 청산 후 1분 데이터 이어붙임 (candle_post_exit=1)
  */
 
+import oracledb from 'oracledb';
 import { getPool } from '../shared/db.js';
 
 export class TradeRecorder {
   constructor() {
-    this.stats = { entriesRecorded: 0, exitsRecorded: 0, errors: 0 };
+    this.stats = { entriesRecorded: 0, exitsRecorded: 0, postCaptures: 0, errors: 0 };
     this.ringBuffer = null; // main에서 주입
+    this._pollTimer = null;
+  }
+
+  /** 10초 폴링 시작 — 청산 1분 경과 건 후행 캡처 */
+  startPostExitPoller() {
+    this._pollTimer = setInterval(() => this._pollPendingCaptures(), 10 * 1000);
+  }
+
+  stop() {
+    if (this._pollTimer) clearInterval(this._pollTimer);
   }
 
   /**
@@ -57,37 +68,76 @@ export class TradeRecorder {
   }
 
   /**
-   * 청산 5분 후 최종 캡처 → DB 저장
+   * 10초마다: DB에서 청산 1분 경과 + candle_post_exit=0 인 건 조회 → 후행 캡처
+   * (청산 후 1분간의 가격 추이를 기존 캔들에 이어붙임)
    */
-  _schedulePostExitCapture(posId, symbol, entryTimeSec) {
-    setTimeout(async () => {
+  async _pollPendingCaptures() {
+    if (!this.ringBuffer) return;
+    try {
+      const conn = await getPool().getConnection();
       try {
-        if (!this.ringBuffer) return;
-        const nowSec = Date.now() / 1000;
-        const windowSec = Math.ceil(nowSec - entryTimeSec) + 300;
-        const trades = this.ringBuffer.getTradesWindow(symbol, windowSec);
-        const candles = this._buildCandles1s(trades);
-        if (!candles.length) return;
+        const result = await conn.execute(
+          `SELECT id, symbol, entry_time, exit_time, candle_data
+           FROM z4_positions
+           WHERE status = 'CLOSED'
+             AND candle_post_exit = 0
+             AND exit_time < CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '70' SECOND
+           FETCH FIRST 10 ROWS ONLY`,
+          {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
 
-        // 진입 시점 데이터가 포함된 경우에만 덮어쓰기 (ringBuffer 밀림 방지)
-        const firstCandleTime = candles[0].time;
-        if (firstCandleTime > entryTimeSec + 60) {
-          // 새 캡처가 진입 시점을 포함하지 않으면 기존 데이터 유지
-          return;
+        for (const row of (result.rows || [])) {
+          const exitTimeSec = row.EXIT_TIME instanceof Date ? row.EXIT_TIME.getTime() / 1000 : null;
+          let existingCandles = [];
+          if (row.CANDLE_DATA) {
+            try {
+              existingCandles = JSON.parse(typeof row.CANDLE_DATA === 'string' ? row.CANDLE_DATA : await row.CANDLE_DATA);
+            } catch {}
+          }
+          await this._doPostExitCapture(row.ID, row.SYMBOL, exitTimeSec, existingCandles);
         }
-
-        const conn = await getPool().getConnection();
-        try {
-          await conn.execute(
-            `UPDATE z4_positions SET candle_data = :data WHERE id = :id`,
-            { id: posId, data: JSON.stringify(candles) },
-            { autoCommit: true }
-          );
-        } finally { await conn.close(); }
-      } catch (err) {
-        console.error(`[Z4] Post-exit candle capture error (pos=${posId}):`, err.message);
+      } finally { await conn.close(); }
+    } catch (err) {
+      // 테이블에 candle_post_exit 컬럼 없으면 무시 (마이그레이션 전)
+      if (!String(err.message).includes('ORA-00904')) {
+        console.error('[Z4] Post-exit poll error:', err.message);
       }
-    }, 5 * 60 * 1000); // 5분 후
+    }
+  }
+
+  /** 단일 포지션 후행 캡처: 기존 캔들에 청산 후 1분 데이터 이어붙이기 */
+  async _doPostExitCapture(posId, symbol, exitTimeSec, existingCandles) {
+    try {
+      if (!exitTimeSec) return;
+
+      // ringBuffer에서 청산 시점 ~ 청산+70초 범위의 체결 데이터 가져오기
+      const trades = this.ringBuffer.getTradesWindow(symbol, 90);
+      const postTrades = trades.filter(t => t.ts >= exitTimeSec && t.ts <= exitTimeSec + 65);
+      const postCandles = this._buildCandles1s(postTrades);
+
+      // 기존 캔들의 마지막 타임스탬프 이후 데이터만 추가
+      const lastExistingTime = existingCandles.length > 0
+        ? existingCandles[existingCandles.length - 1].time
+        : 0;
+      const newCandles = postCandles.filter(c => c.time > lastExistingTime);
+
+      const merged = [...existingCandles, ...newCandles];
+
+      const conn = await getPool().getConnection();
+      try {
+        await conn.execute(
+          `UPDATE z4_positions SET candle_data = :data, candle_post_exit = 1 WHERE id = :id`,
+          { id: posId, data: JSON.stringify(merged) },
+          { autoCommit: true }
+        );
+        if (newCandles.length > 0) {
+          console.log(`[Z4] Post-exit capture pos=${posId}: +${newCandles.length}s candles appended`);
+        }
+        this.stats.postCaptures++;
+      } finally { await conn.close(); }
+    } catch (err) {
+      console.error(`[Z4] Post-exit capture error (pos=${posId}):`, err.message);
+    }
   }
 
   async record(trade) {
@@ -103,8 +153,8 @@ export class TradeRecorder {
     try {
       await conn.execute(
         `INSERT INTO z4_positions
-         (id, symbol, direction, entry_price, target_price, safety_stop, time_stop_min, entry_time, entry_reasoning, plan_id, status)
-         VALUES (:id, :sym, :dir, :price, :target, :safety, :tsMin, :ts, :reasoning, :planId, 'OPEN')`,
+         (id, symbol, direction, entry_price, target_price, safety_stop, time_stop_min, entry_time, entry_reasoning, plan_id, status, candle_post_exit)
+         VALUES (:id, :sym, :dir, :price, :target, :safety, :tsMin, :ts, :reasoning, :planId, 'OPEN', 0)`,
         {
           id: trade.positionId,
           sym: trade.symbol,
@@ -163,7 +213,8 @@ export class TradeRecorder {
            pnl_pct = :pnlPct,
            pnl_amount = :pnlNet,
            status = 'CLOSED',
-           candle_data = :candleData
+           candle_data = :candleData,
+           candle_post_exit = 0
          WHERE id = :id`,
         {
           id: trade.positionId,
@@ -176,9 +227,6 @@ export class TradeRecorder {
         },
         { autoCommit: true }
       );
-
-      // 5분 후 최종 캡처 (청산 후 5분 데이터 포함)
-      this._schedulePostExitCapture(trade.positionId, trade.symbol, entryTimeSec);
 
       await conn.execute(
         `INSERT INTO z4_trade_log (position_id, action, symbol, side, price, qty, fee_amount, fee_rate)

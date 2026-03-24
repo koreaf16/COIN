@@ -194,13 +194,19 @@ export class ApiServer {
       const conn = await getPool().getConnection();
       try {
         const result = await conn.execute(
-          `SELECT id, symbol, direction, entry_price, entry_time, exit_price, exit_time,
-                  exit_reason, pnl_pct, pnl_amount, status, plan_id
-           FROM z4_positions WHERE status = :status
-           ORDER BY COALESCE(exit_time, entry_time) DESC FETCH FIRST 100 ROWS ONLY`,
+          `SELECT p.id, p.symbol, p.direction, p.entry_price, p.entry_time, p.exit_price, p.exit_time,
+                  p.exit_reason, p.pnl_pct, p.pnl_amount, p.status, p.plan_id,
+                  (SELECT qty FROM z4_trade_log WHERE position_id = p.id AND action = 'ENTRY'
+                   ORDER BY id ASC FETCH FIRST 1 ROW ONLY) AS qty
+           FROM z4_positions p WHERE p.status = :status
+           ORDER BY COALESCE(p.exit_time, p.entry_time) DESC FETCH FIRST 100 ROWS ONLY`,
           { status }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
-        return await Promise.all(result.rows.map(toRow));
+        const rows = await Promise.all(result.rows.map(toRow));
+        return rows.map(r => ({
+          ...r,
+          notional: r.qty != null && r.entry_price != null ? +(r.qty * r.entry_price).toFixed(2) : null,
+        }));
       } finally { await conn.close(); }
     });
 
@@ -245,6 +251,8 @@ export class ApiServer {
               currentPrice,
               qty: exPos.qty,
               leverage: exPos.leverage,
+              notional: +(exPos.qty * exPos.entryPrice).toFixed(2),
+              marginUsed: exPos.leverage ? +(exPos.qty * exPos.entryPrice / exPos.leverage).toFixed(2) : null,
               unrealizedPnlPct: +pnlPct.toFixed(3),
               unrealizedPnlUsd: +pnlUsd.toFixed(2),
               targetPrice: meta?.targetPrice || null,
@@ -278,6 +286,7 @@ export class ApiServer {
             entryPrice: pos.entryPrice,
             currentPrice,
             qty: pos.qty,
+            notional: pos.qty != null ? +(pos.qty * pos.entryPrice).toFixed(2) : null,
             unrealizedPnlPct: +pnlPct.toFixed(3),
             unrealizedPnlUsd: +pnlUsd.toFixed(2),
             targetPrice: pos.targetPrice,
@@ -301,7 +310,7 @@ export class ApiServer {
         // 만료 플랜 즉시 DB 정리
         await conn.execute(
           `UPDATE z2_execution_plan SET status = 'EXPIRED'
-           WHERE status = 'ACTIVE' AND valid_until < SYSTIMESTAMP`,
+           WHERE status = 'ACTIVE' AND valid_until < CAST(SYSTIMESTAMP AS TIMESTAMP)`,
           {}, { autoCommit: true }
         );
 
@@ -310,7 +319,7 @@ export class ApiServer {
           `SELECT id, symbol, direction, entry_conditions, target_price,
                   confidence, reasoning, created_at, valid_until
            FROM z2_execution_plan
-           WHERE status = 'ACTIVE' AND valid_until > SYSTIMESTAMP
+           WHERE status = 'ACTIVE' AND valid_until > CAST(SYSTIMESTAMP AS TIMESTAMP)
            ORDER BY valid_until DESC FETCH FIRST 100 ROWS ONLY`,
           {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
@@ -385,7 +394,7 @@ export class ApiServer {
           `SELECT id, symbol, created_at, valid_until, direction, entry_conditions,
                   target_price, confidence, reasoning, status
            FROM z2_execution_plan WHERE status = :status
-           ${status === 'ACTIVE' ? 'AND valid_until > SYSTIMESTAMP' : ''}
+           ${status === 'ACTIVE' ? 'AND valid_until > CAST(SYSTIMESTAMP AS TIMESTAMP)' : ''}
            ORDER BY created_at DESC FETCH FIRST 50 ROWS ONLY`,
           { status }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
@@ -468,7 +477,7 @@ export class ApiServer {
       try {
         const result = await conn.execute(
           `SELECT id, event_date, event_name, importance, previous, forecast, actual
-           FROM z0_economic_calendar WHERE event_date > SYSTIMESTAMP - INTERVAL '1' DAY
+           FROM z0_economic_calendar WHERE event_date > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '1' DAY
            ORDER BY event_date ASC FETCH FIRST 20 ROWS ONLY`,
           {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
         );
@@ -679,6 +688,16 @@ export class ApiServer {
         return res.json();
       } catch (err) {
         return { error: 'LLM server not running', detail: err.message };
+      }
+    });
+
+    this.app.get('/api/llm-active', async () => {
+      try {
+        const res = await fetch(`${LLM_URL}/api/llm-active`, { signal: AbortSignal.timeout(3000) });
+        if (!res.ok) return { calls: [] };
+        return res.json();
+      } catch {
+        return { calls: [] };
       }
     });
 

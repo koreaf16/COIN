@@ -5,16 +5,18 @@
 
 export class RiskGate {
   constructor(opts = {}) {
-    this.maxPositionPct = opts.maxPositionPct || 2.0;    // 1회 투자 최대 자본비율
+    this.maxPositionPct = opts.maxPositionPct || 10.0;   // 1회 투자 최대 자본비율
     this.safetyStopPct = opts.safetyStopPct || 2.0;      // 고정 안전망 손절 (%)
     this.maxDailyLossPct = opts.maxDailyLossPct || 5.0;  // 일일 최대 손실 (%)
     this.maxOpenTrades = opts.maxOpenTrades || 3;
     this.cooldownSec = opts.cooldownSec || 60;
     this.maxLeverage = opts.maxLeverage || 3;
+    this.symbolLossCooldownSec = opts.symbolLossCooldownSec || 300; // 심볼별 손절 후 쿨다운 (5분)
 
     this.openTrades = [];
     this.dailyPnl = 0;
     this.lastExitTime = 0;
+    this._symbolLossTime = new Map(); // symbol → 마지막 손절 시각
   }
 
   check(signal, balance, currentPrice) {
@@ -33,6 +35,13 @@ export class RiskGate {
 
     if (this.openTrades.some(t => t.symbol === signal.symbol)) {
       return { allowed: false, reason: `${signal.symbol} 이미 포지션 보유` };
+    }
+
+    // 심볼별 손절 후 쿨다운 (같은 심볼 연속 손절 방지)
+    const symbolLossTs = this._symbolLossTime.get(signal.symbol) || 0;
+    const symbolElapsed = (Date.now() - symbolLossTs) / 1000;
+    if (symbolElapsed < this.symbolLossCooldownSec && symbolLossTs > 0) {
+      return { allowed: false, reason: `${signal.symbol} 손절 후 쿨다운 ${Math.ceil(this.symbolLossCooldownSec - symbolElapsed)}초` };
     }
 
     // 포지션 사이징 (Binance minNotional=$100 + stepSize floor 보상)
@@ -71,6 +80,13 @@ export class RiskGate {
 
   addTrade(trade) { this.openTrades.push(trade); }
   removeTrade(tradeId) { this.openTrades = this.openTrades.filter(t => t.id !== tradeId); }
-  recordExit(pnl) { this.dailyPnl += pnl; this.lastExitTime = Date.now(); }
+  recordExit(pnl, symbol) {
+    this.dailyPnl += pnl;
+    this.lastExitTime = Date.now();
+    // 손실 시 해당 심볼 쿨다운 기록
+    if (pnl < 0 && symbol) {
+      this._symbolLossTime.set(symbol, Date.now());
+    }
+  }
   resetDaily() { this.dailyPnl = 0; }
 }

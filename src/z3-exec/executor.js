@@ -29,17 +29,19 @@ export class Executor {
       testnet: opts.testnetMode !== false,
     });
 
+    this.maxSlippagePct = opts.maxSlippagePct || 0.3; // 진입 전 최대 허용 슬리피지 0.3%
+
     this.riskGate = new RiskGate({
-      maxPositionPct: opts.maxPositionPct || 2.0,
+      maxPositionPct: opts.maxPositionPct || 10.0,
       safetyStopPct: opts.safetyStopPct || 2.0,
       maxDailyLossPct: opts.maxDailyLossPct || 10.0,
       maxOpenTrades: opts.maxOpenTrades || 20,
-      cooldownSec: opts.cooldownSec || 10,
+      cooldownSec: opts.cooldownSec || 30,
       maxLeverage: opts.maxLeverage || 3,
     });
 
     this.smartExit = new SmartExit({
-      validateIntervalSec: opts.validateIntervalSec || 30,
+      validateIntervalSec: opts.validateIntervalSec || 180,
       ringBuffer: this.ringBuffer,
     });
 
@@ -80,6 +82,9 @@ export class Executor {
 
       // 10초마다 포지션 동기화
       this._syncTimer = setInterval(() => this._syncPositions(), 10000);
+
+      // 5분마다 스테일 포지션 정리 (time_stop 초과 / ERROR 재시도)
+      this._cleanupTimer = setInterval(() => this._cleanupStalePositions(), 5 * 60 * 1000);
     } else {
       console.log(`[Z3-Exec] SIM mode (no API key) balance=$${this.balance.toFixed(2)}`);
     }
@@ -96,12 +101,48 @@ export class Executor {
   stop() {
     if (this._monitorTimer) clearInterval(this._monitorTimer);
     if (this._syncTimer) clearInterval(this._syncTimer);
+    if (this._cleanupTimer) clearInterval(this._cleanupTimer);
     if (this._dailyResetTimer) {
       clearTimeout(this._dailyResetTimer);
       clearInterval(this._dailyResetTimer);
     }
     this.smartExit.stopAll();
     console.log(`[Z3-Exec] Stopped (entries=${this.stats.entries}, exits=${this.stats.exits})`);
+  }
+
+  /** 전체 오픈 포지션 시장가 청산 (긴급 종료 / 오류 복구용) */
+  async closeAllPositions(reason = 'EMERGENCY_SHUTDOWN') {
+    const positions = [...this.activePositions.values()];
+    if (!positions.length) return;
+
+    console.log(`[Z3-Exec] closeAllPositions: closing ${positions.length} positions (reason=${reason})`);
+    const results = await Promise.allSettled(
+      positions.map(pos => {
+        const price = this.ringBuffer.getLastPrice(pos.symbol) || pos.entryPrice;
+        return this._exitPosition(pos.id, price, reason);
+      })
+    );
+
+    const failed = results.filter(r => r.status === 'rejected');
+    if (failed.length) {
+      console.error(`[Z3-Exec] closeAllPositions: ${failed.length} positions failed to close`);
+      // DB에 ERROR 상태로 마킹 (수동 확인용)
+      for (const pos of positions) {
+        if (this.activePositions.has(pos.id)) {
+          try {
+            const { getPool: getDbPool } = await import('../shared/db.js');
+            const conn = await getDbPool().getConnection();
+            try {
+              await conn.execute(
+                `UPDATE z4_positions SET exit_reason = 'CLOSE_FAILED', status = 'ERROR' WHERE id = :id AND status = 'OPEN'`,
+                { id: pos.id }, { autoCommit: true }
+              );
+            } finally { await conn.close(); }
+          } catch {}
+        }
+      }
+    }
+    console.log(`[Z3-Exec] closeAllPositions done (closed=${positions.length - failed.length} failed=${failed.length})`);
   }
 
   /** [Bug#4] 다음 자정(ET)까지 대기 후 dailyPnl 리셋, 이후 매 24시간 반복 */
@@ -152,6 +193,25 @@ export class Executor {
       return;
     }
 
+    // ── 호가창 슬리피지 사전 체크 ──
+    if (this.liveMode && this.binance.isReady()) {
+      try {
+        const side = signal.direction === 'LONG' ? 'BUY' : 'SELL';
+        const { slippagePct, depthUsd } = await this.binance.estimateSlippage(
+          signal.symbol, check.positionValue, side
+        );
+        if (slippagePct > this.maxSlippagePct) {
+          this.stats.rejected++;
+          console.log(
+            `[Z3-Exec] REJECTED: ${signal.symbol} 슬리피지 ${slippagePct.toFixed(2)}% > ${this.maxSlippagePct}% (depth=$${depthUsd.toLocaleString()})`
+          );
+          return;
+        }
+      } catch (err) {
+        console.warn(`[Z3-Exec] Slippage check failed ${signal.symbol}: ${err.message} — proceeding`);
+      }
+    }
+
     try {
       let entryPrice = currentPrice;
       let executedQty = check.positionSize;
@@ -166,9 +226,16 @@ export class Executor {
           ? signal.stopPrice < entryPrice  // LONG: 손절가 < 진입가
           : signal.stopPrice > entryPrice; // SHORT: 손절가 > 진입가
         if (llmStopValid) {
-          const llmStopDist = Math.abs(entryPrice - signal.stopPrice);
-          const safetyStopDist = Math.abs(entryPrice - check.safetyStop);
-          effectiveStop = llmStopDist <= safetyStopDist ? signal.stopPrice : check.safetyStop;
+          const llmStopDistPct = Math.abs(entryPrice - signal.stopPrice) / entryPrice * 100;
+          
+          // LLM이 지정한 손절가가 15% 이내라면, RiskGate의 고정 안전망(2%)을 무시하고 LLM의 판단(ATR 기반 등)을 최우선으로 존중
+          if (llmStopDistPct <= 15.0) {
+            effectiveStop = signal.stopPrice;
+          } else {
+            // 15%를 초과하는 비정상적인 손절가(할루시네이션)일 경우에만 안전망 가동
+            console.warn(`[Z3-Exec] LLM stop ${signal.stopPrice} is too wide (${llmStopDistPct.toFixed(1)}%). Capped to safety net.`);
+            effectiveStop = check.safetyStop;
+          }
         }
       }
 
@@ -375,6 +442,17 @@ export class Executor {
         } catch (_) {}
       }
 
+      // SIM 모드: SAFETY_STOP 시 exit price를 safetyStop으로 클램핑
+      // (거래소 stop-market 주문이 없어 100ms 폴링 갭에서 가격이 크게 뛸 수 있음)
+      if (!this.liveMode && exitReason === 'SAFETY_STOP' && position.safetyStop) {
+        const isLong = position.direction === 'LONG';
+        if (isLong && exitPrice < position.safetyStop) {
+          exitPrice = position.safetyStop;
+        } else if (!isLong && exitPrice > position.safetyStop) {
+          exitPrice = position.safetyStop;
+        }
+      }
+
       // 청산 성공 시 메모리 정리
       this.activePositions.delete(posId);
       this.riskGate.removeTrade(posId);
@@ -395,7 +473,7 @@ export class Executor {
         `hold=${holdTimeSec.toFixed(1)}s [${this.liveMode ? 'LIVE' : 'SIM'}]`
       );
 
-      this.riskGate.recordExit(pnlNet);
+      this.riskGate.recordExit(pnlNet, position.symbol);
       if (!this.liveMode) this.balance += pnlNet;
       this.stats.exits++;
 
@@ -510,6 +588,100 @@ export class Executor {
     } catch (err) {
       console.error(`[Z3-Exec] Partial exit failed ${position.symbol}: ${err.message}`);
       position._partialExited = false; // 실패 시 재시도 가능
+    }
+  }
+
+  /**
+   * 5분마다: DB의 스테일 포지션 정리
+   *   - OPEN + time_stop_min 초과 → 시장가 청산 시도
+   *   - ERROR → 재청산 1회 시도, 실패 시 MANUAL_REVIEW로 마킹
+   */
+  async _cleanupStalePositions() {
+    const { getPool: getDbPool } = await import('../shared/db.js');
+    const oracledb = (await import('oracledb')).default;
+    let conn;
+    try {
+      conn = await getDbPool().getConnection();
+
+      // 1) OPEN이지만 time_stop_min 초과한 포지션
+      const staleResult = await conn.execute(
+        `SELECT id, symbol, direction, entry_price, entry_time, time_stop_min
+         FROM z4_positions
+         WHERE status = 'OPEN'
+           AND entry_time + NUMTODSINTERVAL(time_stop_min + 10, 'MINUTE') < CAST(SYSTIMESTAMP AS TIMESTAMP)`,
+        {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+
+      for (const row of (staleResult.rows || [])) {
+        const posId = row.ID;
+        if (this.activePositions.has(posId)) continue; // 메모리에서 관리 중이면 스킵
+
+        console.warn(`[Z3-Exec] STALE OPEN pos=${posId} ${row.SYMBOL} (time_stop exceeded) — force closing`);
+        try {
+          if (this.liveMode) {
+            // qty는 DB에 없으므로 거래소에서 실제 포지션 수량 조회
+            const exPositions = await this.getCachedPositions();
+            const exPos = exPositions.find(p => p.symbol === row.SYMBOL);
+            const qty = exPos?.qty || 0;
+            await this.binance.closePosition(row.SYMBOL, row.DIRECTION, qty);
+          }
+          await conn.execute(
+            `UPDATE z4_positions SET status = 'CLOSED', exit_time = SYSTIMESTAMP,
+             exit_reason = 'STALE_CLEANUP', exit_price = entry_price, pnl_pct = 0, pnl_amount = 0
+             WHERE id = :id`,
+            { id: posId }, { autoCommit: true }
+          );
+          console.log(`[Z3-Exec] STALE pos=${posId} closed`);
+        } catch (err) {
+          console.error(`[Z3-Exec] STALE close failed pos=${posId}: ${err.message}`);
+          await conn.execute(
+            `UPDATE z4_positions SET exit_reason = 'STALE_CLOSE_FAILED' WHERE id = :id`,
+            { id: posId }, { autoCommit: true }
+          ).catch(() => {});
+        }
+      }
+
+      // 2) ERROR 상태 포지션 → 재청산 1회 시도
+      const errorResult = await conn.execute(
+        `SELECT id, symbol, direction, entry_price
+         FROM z4_positions
+         WHERE status = 'ERROR'
+           AND exit_time > CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '1' HOUR`,  // 1시간 이내 것만 재시도
+        {}, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+
+      for (const row of (errorResult.rows || [])) {
+        console.warn(`[Z3-Exec] Retrying ERROR close pos=${row.ID} ${row.SYMBOL}`);
+        try {
+          if (this.liveMode) {
+            const exPositions = await this.getCachedPositions();
+            const exPos = exPositions.find(p => p.symbol === row.SYMBOL);
+            const qty = exPos?.qty || 0;
+            await this.binance.closePosition(row.SYMBOL, row.DIRECTION, qty);
+          }
+          await conn.execute(
+            `UPDATE z4_positions SET status = 'CLOSED', exit_time = SYSTIMESTAMP,
+             exit_reason = 'ERROR_RETRY_SUCCESS'
+             WHERE id = :id`,
+            { id: row.ID }, { autoCommit: true }
+          );
+          console.log(`[Z3-Exec] ERROR retry success pos=${row.ID}`);
+        } catch (err) {
+          // 재시도도 실패 → MANUAL_REVIEW로 전환
+          await conn.execute(
+            `UPDATE z4_positions SET status = 'MANUAL_REVIEW',
+             exit_reason = 'RETRY_FAILED: ' || :reason
+             WHERE id = :id`,
+            { id: row.ID, reason: err.message.substring(0, 200) }, { autoCommit: true }
+          ).catch(() => {});
+          console.error(`[Z3-Exec] ERROR retry failed pos=${row.ID} → MANUAL_REVIEW`);
+        }
+      }
+
+    } catch (err) {
+      console.error('[Z3-Exec] cleanupStalePositions error:', err.message);
+    } finally {
+      if (conn) await conn.close().catch(() => {});
     }
   }
 

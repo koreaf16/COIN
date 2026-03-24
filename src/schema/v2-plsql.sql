@@ -257,7 +257,7 @@ BEGIN
     -- 24시간 전 DXY
     BEGIN
         SELECT value INTO v_dxy_prev FROM z0_macro_data
-        WHERE indicator = 'DXY' AND ts < SYSTIMESTAMP - INTERVAL '24' HOUR
+        WHERE indicator = 'DXY' AND ts < CAST(SYSTIMESTAMP AS TIMESTAMP) - INTERVAL '24' HOUR
         ORDER BY ts DESC FETCH FIRST 1 ROW ONLY;
     EXCEPTION WHEN NO_DATA_FOUND THEN v_dxy_prev := v_dxy; END;
 

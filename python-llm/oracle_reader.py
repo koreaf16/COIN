@@ -105,12 +105,29 @@ async def get_market_snapshot(symbol: str) -> dict:
 
 
 async def get_all_symbols_snapshot(symbols: list[str]) -> dict:
-    """전체 심볼의 시장 스냅샷을 한번에 조회"""
+    """전체 심볼의 시장 스냅샷을 압축하여 조회 (토큰 최적화)"""
     result = {}
     for sym in symbols:
         snap = await get_market_snapshot(sym)
-        if snap and snap.get("price"):
-            result[sym] = snap
+        if not snap or not snap.get("price"):
+            continue
+
+        # [최적화 4] Prompt Compression: 핵심 지표 위주로 필드 압축
+        compressed = {
+            "p": snap["price"],
+            "v_1m": snap.get("volume_1m", 0),
+            "oi_pct": snap.get("oi_change_pct", 0),
+            "fr": snap.get("funding_rate", 0),
+            "cvd_1h": snap.get("cvd_1h", 0),
+            "vol_r": snap.get("volatility_regime", "MED"),
+            "atr": snap.get("atr_14", 0),
+            "oi_mat": snap.get("oi_matrix", {}).get("interpretation", "N/A"),
+            "liq": [
+                {"p": l["price"], "v": l["long_usd"] + l["short_usd"]} 
+                for l in snap.get("top_liquidation_levels", [])[:2] # 상위 2개만
+            ]
+        }
+        result[sym] = compressed
     return result
 
 
@@ -127,13 +144,7 @@ async def get_macro_snapshot() -> dict:
 
 
 async def get_similar_states(symbol: str, limit: int = 50) -> dict | None:
-    """유사 과거 시장 상태 검색"""
-    r = _query_one(
-        "SELECT state_vector FROM z1_market_states WHERE symbol = :sym "
-        "ORDER BY ts DESC FETCH FIRST 1 ROW ONLY", {"sym": symbol})
-    if not r or not r[0]:
-        return None
-    # 벡터 검색은 현재 데이터 축적 전이므로 None 반환
+    """유사 과거 시장 상태 검색 (데이터 축적 전 비활성)"""
     return None
 
 
@@ -169,7 +180,7 @@ async def get_active_plans(symbol: str) -> list:
     """활성 실행 플랜"""
     rows = _query(
         "SELECT id, direction, target_price, confidence FROM z2_execution_plan "
-        "WHERE symbol = :sym AND status = 'ACTIVE' AND valid_until > SYSTIMESTAMP "
+        "WHERE symbol = :sym AND status = 'ACTIVE' AND valid_until > CAST(SYSTIMESTAMP AS TIMESTAMP) "
         "ORDER BY created_at DESC", {"sym": symbol})
     return [{"id": int(r[0]), "direction": r[1], "target_price": float(r[2]) if r[2] else None,
              "confidence": float(r[3]) if r[3] else None} for r in rows]

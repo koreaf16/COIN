@@ -11,10 +11,10 @@ interface ProviderStatus {
 }
 
 interface LLMStatus {
-  local?: ProviderStatus;
-  claude_cli?: ProviderStatus;
-  gemini_cli?: ProviderStatus;
-  cloud_api?: ProviderStatus;
+  qwen?: ProviderStatus & { role?: string };
+  deepseek?: ProviderStatus & { role?: string };
+  claude_cli?: ProviderStatus & { role?: string };
+  gemini_cli?: ProviderStatus & { role?: string };
   routing?: Record<string, string>;
   error?: string;
 }
@@ -70,7 +70,8 @@ export default function LLMTestPage() {
   };
 
   const providers = [
-    { key: 'local', label: '로컬 LLM', icon: 'memory', desc: 'Ollama / Qwen3.5-27B', data: status.local },
+    { key: 'qwen', label: 'Qwen 3.5', icon: 'memory', desc: 'Ollama / Qwen3.5-27B', data: status.qwen },
+    { key: 'deepseek', label: 'DeepSeek', icon: 'cloud', desc: 'DeepSeek API', data: status.deepseek },
     { key: 'claude_cli', label: 'Claude CLI', icon: 'terminal', desc: 'Claude Opus 4.6', data: status.claude_cli },
     { key: 'gemini_cli', label: 'Gemini CLI', icon: 'auto_awesome', desc: 'Gemini 3.1 Pro Preview', data: status.gemini_cli },
   ];
@@ -112,6 +113,7 @@ export default function LLMTestPage() {
 
               <div className="text-[11px] space-y-1 text-on-surface-variant flex-1 mb-3">
                 {p.data?.model && <p>모델: <strong className="font-label text-on-surface">{p.data.model}</strong></p>}
+                {p.data?.role && <p>역할: <span className="text-on-surface">{p.data.role}</span></p>}
                 {p.data?.path && <p>경로: <code className="font-label bg-surface-container-low px-1 rounded text-[10px]">{p.data.path}</code></p>}
                 {p.data?.url && <p>URL: <code className="font-label bg-surface-container-low px-1 rounded text-[10px]">{p.data.url}</code></p>}
                 {p.data?.has_key !== undefined && <p>API 키: {p.data.has_key ? '설정됨' : '없음'}</p>}
@@ -143,7 +145,9 @@ export default function LLMTestPage() {
               <div key={task} className="flex items-center gap-2 bg-surface-container-low px-3 py-1.5 rounded">
                 <span className="text-xs font-label font-bold text-on-surface">{task}</span>
                 <span className="text-[10px] text-outline">→</span>
-                <span className={`text-xs font-label font-bold ${route === 'local' ? 'text-primary' : 'text-success'}`}>{route}</span>
+                <span className={`text-xs font-label font-bold ${
+                  route === 'qwen' ? 'text-primary' : route === 'deepseek' ? 'text-tertiary' : 'text-success'
+                }`}>{route}</span>
               </div>
             ))}
           </div>
