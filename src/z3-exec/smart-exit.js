@@ -49,21 +49,32 @@ export class SmartExit {
     this._atrCache.delete(positionId);
   }
 
-  /** ATR 계산 (1분봉 기준, 20봉 평균) — 5초 캐시 */
+  /** ATR 계산 (1분봉 기준, True Range 방식, 20봉) — 5초 캐시 */
   _getATR(symbol) {
     const cached = this._atrCache.get(symbol);
     if (cached && Date.now() - cached.ts < 5000) return cached.atr;
 
     if (!this.ringBuffer) return null;
     const klines = this.ringBuffer.getKlines(symbol, '1m');
-    if (!klines || klines.length < 5) return null;
+    // True Range 계산에 전봉 close 필요 → 최소 21개 필요
+    if (!klines || klines.length < 6) return null;
 
-    const recent = klines.slice(-20);
+    const recent = klines.slice(-21);
     let atrSum = 0;
-    for (const k of recent) {
-      atrSum += (k.high || k.h) - (k.low || k.l);
+    let count = 0;
+    for (let i = 1; i < recent.length; i++) {
+      const high = recent[i].high || recent[i].h || 0;
+      const low = recent[i].low || recent[i].l || 0;
+      const prevClose = recent[i - 1].close || recent[i - 1].c || 0;
+      if (high > 0 && low > 0 && prevClose > 0) {
+        // True Range = max(H-L, |H-prevClose|, |L-prevClose|)
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        atrSum += tr;
+        count++;
+      }
     }
-    const atr = atrSum / recent.length;
+    if (count === 0) return null;
+    const atr = atrSum / count;
     this._atrCache.set(symbol, { atr, ts: Date.now() });
     return atr;
   }

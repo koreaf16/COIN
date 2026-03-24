@@ -63,6 +63,10 @@ export class FuturesRawWriter {
     const buyVol = kline.interval === '1m' ? acc.buyVol : kline.takerBuyVol;
     const sellVol = kline.interval === '1m' ? acc.sellVol : (kline.volume - kline.takerBuyVol);
 
+    // CVD 델타: 매수 - 매도 체결량 (LLM 시장 분석용)
+    // cumulative가 아닌 per-kline delta로 저장 → oracle_reader에서 최근 2개 비교로 방향 도출
+    const cvdDelta = buyVol - sellVol;
+
     // 1m kline close 시 집계 리셋
     if (kline.interval === '1m') {
       this.volumeAcc.set(kline.symbol, { buyVol: 0, sellVol: 0 });
@@ -74,9 +78,9 @@ export class FuturesRawWriter {
         await conn.execute(
           `INSERT INTO z0_price_ohlcv
            (symbol, timeframe, ts, open_price, high_price, low_price, close_price,
-            volume, quote_volume, trade_count, buy_volume, sell_volume)
+            volume, quote_volume, trade_count, buy_volume, sell_volume, cvd)
            VALUES (:symbol, :tf, :ts, :open, :high, :low, :close,
-                   :vol, :qvol, :tc, :bvol, :svol)`,
+                   :vol, :qvol, :tc, :bvol, :svol, :cvd)`,
           {
             symbol: kline.symbol,
             tf: kline.interval,
@@ -90,6 +94,7 @@ export class FuturesRawWriter {
             tc: kline.tradeCount,
             bvol: buyVol,
             svol: sellVol,
+            cvd: cvdDelta,
           },
           { autoCommit: true }
         );

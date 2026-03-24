@@ -52,7 +52,7 @@ export class RuleEngine {
       if (!currentData.price) continue;
 
       for (const plan of plans) {
-        const result = evaluateConditions(plan.entryConditions, currentData);
+        const result = evaluateConditions(plan.entryConditions, currentData, plan.direction);
         if (result.met) {
           this._emitSignal(plan, currentData, result.details);
           break; // 심볼당 1개 시그널만 (이중 진입 방지)
@@ -83,17 +83,51 @@ export class RuleEngine {
     const avgVol1m = trades5m.length > 0 ? (vol5m / 5) : 1;
     const volumeSurge = avgVol1m > 0 ? totalVol / avgVol1m : 1.0;
 
+    // ── Conflict Detection 필드 ──
+    // 1h 가격 방향 (Ring Buffer 1h kline 기반)
+    const klines1h = this.ringBuffer.getKlines(symbol, '1h');
+    let price_dir_1h = 'FLAT';
+    if (klines1h.length >= 2) {
+      const prev = klines1h[klines1h.length - 2];
+      const curr = klines1h[klines1h.length - 1];
+      const prevClose = prev.close || prev.c || 0;
+      const currClose = curr.close || curr.c || 0;
+      if (prevClose > 0) {
+        const chg = (currClose - prevClose) / prevClose * 100;
+        price_dir_1h = chg > 0.1 ? 'UP' : chg < -0.1 ? 'DOWN' : 'FLAT';
+      }
+    }
+
+    // OI 방향 (파생 최신 데이터 기반)
+    const oiChgPct = deriv.oi_change_pct || 0;
+    const oi_dir_1h = oiChgPct > 0.5 ? 'UP' : oiChgPct < -0.5 ? 'DOWN' : 'FLAT';
+
+    // ── volatility_acceleration: 현재 1m ATR / 최근 10봉 평균 ATR ──
+    // LLM이 entry_conditions에 이 필드를 사용할 수 있으므로 반드시 포함
+    const klines1m = this.ringBuffer.getKlines(symbol, '1m');
+    let volatility_acceleration = 1.0;
+    if (klines1m.length >= 11) {
+      const recent = klines1m.slice(-11);
+      const ranges = recent.map(k => (k.high || k.h || 0) - (k.low || k.l || 0));
+      const currentRange = ranges[ranges.length - 1];
+      const avgRange = ranges.slice(0, -1).reduce((s, v) => s + v, 0) / (ranges.length - 1);
+      volatility_acceleration = avgRange > 0 ? currentRange / avgRange : 1.0;
+    }
+
     return {
       price: snapshot.price,
       funding_rate: mark.fundingRate || deriv.funding_rate || 0,
       predicted_funding: mark.fundingRate || deriv.predicted_rate || 0,
-      oi_change_pct: deriv.oi_change_pct || 0,
+      oi_change_pct: oiChgPct,
       open_interest: deriv.open_interest || 0,
       long_ratio: deriv.long_ratio || 0,
       short_ratio: deriv.short_ratio || 0,
       cvd_direction: cvdDirection,
       macro_regime: this.macroCollector?.getRegime() || 'neutral',
       volume_surge: volumeSurge,
+      price_dir_1h,
+      oi_dir_1h,
+      volatility_acceleration,
     };
   }
 

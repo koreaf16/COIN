@@ -28,11 +28,11 @@ export class PerformanceTracker {
       const result = await conn.execute(
         `SELECT
            COUNT(*) AS total,
-           SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS wins,
-           SUM(CASE WHEN pnl_pct <= 0 THEN 1 ELSE 0 END) AS losses,
+           SUM(CASE WHEN pnl_amount > 0 THEN 1 ELSE 0 END) AS wins,
+           SUM(CASE WHEN pnl_amount <= 0 THEN 1 ELSE 0 END) AS losses,
            SUM(pnl_amount) AS total_pnl,
-           AVG(CASE WHEN pnl_pct > 0 THEN pnl_pct END) AS avg_win,
-           AVG(CASE WHEN pnl_pct <= 0 THEN pnl_pct END) AS avg_loss
+           AVG(CASE WHEN pnl_amount > 0 THEN pnl_pct END) AS avg_win,
+           AVG(CASE WHEN pnl_amount <= 0 THEN pnl_pct END) AS avg_loss
          FROM z4_positions
          WHERE status = 'CLOSED'
            AND TRUNC(exit_time) = TO_DATE(:today, 'YYYY-MM-DD')`,

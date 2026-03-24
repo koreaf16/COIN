@@ -17,6 +17,7 @@ export class LLMScheduler {
   constructor(newsCollector, symbols, opts = {}) {
     this.newsCollector = newsCollector;
     this.symbols = symbols;
+    this.ringBuffer = opts.ringBuffer || null;  // 심볼 스킵 최적화 / 볼륨 정렬용
     this.economicCalendar = opts.economicCalendar || null;
     this.fearGreedCollector = opts.fearGreedCollector || null;
     this.stablecoinCollector = opts.stablecoinCollector || null;
@@ -131,8 +132,8 @@ export class LLMScheduler {
 
       // [최적화 1] Symbol Pruning: 1시간 거래량 기준 정렬 (데이터 없는 종목 뒤로)
       const sortedSymbols = [...this.symbols].sort((a, b) => {
-        const snapA = this.newsCollector?.ringBuffer?.getLastKline(a, '1h');
-        const snapB = this.newsCollector?.ringBuffer?.getLastKline(b, '1h');
+        const snapA = this.ringBuffer?.getLastKline(a, '1h');
+        const snapB = this.ringBuffer?.getLastKline(b, '1h');
         return (snapB?.volume || 0) - (snapA?.volume || 0);
       });
 
@@ -144,23 +145,24 @@ export class LLMScheduler {
         // [최적화 2] Logical Caching: 핵심 데이터 변화가 미미한 심볼 제외
         const filteredBatch = [];
         for (const sym of batch) {
-          const current = this.newsCollector?.ringBuffer?.getSnapshot(sym);
+          const current = this.ringBuffer?.getSnapshot(sym);
           const last = this._lastSnapshots.get(sym);
 
           if (last && current && current.price && current.derivatives) {
             const priceChange = Math.abs(current.price - last.price) / last.price;
             const oiChange = Math.abs((current.derivatives.open_interest || 0) - (last.oi || 0)) / (last.oi || 1e-9);
 
-            // 가격 0.1% 미만 & OI 1% 미만 변화 시 기존 플랜 연장 후 건너뜀
-            if (priceChange < 0.001 && oiChange < 0.01) {
+            // 가격 0.2% 미만 & OI 2% 미만 변화 시 기존 플랜 연장 후 건너뜀
+            // (이전: 0.1%/1% → 너무 민감해서 LLM 과호출 유발)
+            if (priceChange < 0.002 && oiChange < 0.02) {
               await this._extendPlanForSymbol(sym);
-              console.log(`[Z2-Sched] Skip LLM for ${sym} (Price $\Delta$=${(priceChange * 100).toFixed(3)}%, OI $\Delta$=${(oiChange * 100).toFixed(3)}%) - Plan extended`);
+              console.log(`[Z2-Sched] Skip LLM for ${sym} (Price Δ=${(priceChange * 100).toFixed(3)}%, OI Δ=${(oiChange * 100).toFixed(3)}%) - Plan extended`);
               totalSkipped++;
               continue;
             }
           }
           filteredBatch.push(sym);
-          // 캐시 업데이트
+          // 캐시 업데이트 (ringBuffer 스냅샷 기준)
           if (current && current.derivatives) {
             this._lastSnapshots.set(sym, {
               price: current.price,
@@ -181,8 +183,16 @@ export class LLMScheduler {
         }
 
         const plans = (result?.plans || []).filter(p => p.symbol && p.direction);
-        
+
+        // 최소 신뢰도 기준: 미달 플랜은 저장하지 않음 (저품질 진입 차단)
+        const MIN_PLAN_CONFIDENCE = 0.5;
+
         for (const plan of plans) {
+          const planConf = Math.min(plan.probability || result.confidence, result.confidence);
+          if (planConf < MIN_PLAN_CONFIDENCE) {
+            console.log(`[Z2-Sched] Skip low-conf plan: ${plan.symbol} (conf=${planConf.toFixed(2)} < ${MIN_PLAN_CONFIDENCE})`);
+            continue;
+          }
           // 신규 플랜 저장 전 해당 종목의 기존 ACTIVE 플랜만 만료 처리 (Surgical Expire)
           await this._expirePlanForSymbol(plan.symbol);
           await this._saveUnifiedPlan(plan, result.confidence);

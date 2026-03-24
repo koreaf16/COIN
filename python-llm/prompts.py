@@ -140,7 +140,9 @@ Fields and data types (use ONLY numeric comparisons for numeric fields):
 - cvd_direction: float (-1.0 = strong sell pressure, 0 = neutral, +1.0 = strong buy pressure) — use >, <, >=, <=
 - macro_regime: string enum ("risk_on", "risk_off", "neutral") — use "in" or "=="
 - volume_surge: float (ratio vs 5min avg, e.g. 2.0 = 2x normal volume) — use >, <, >=, <=
-- volatility_acceleration: float (current ATR / recent 10-bar avg ATR) — use >, <, >=, <=
+- volatility_acceleration: float (current ATR / recent 10-bar avg ATR)
+  IMPORTANT: If volatility_acceleration > 1.5, market is explosively volatile — use as entry filter.
+  Always add this condition in HIGH volatility scenarios: {"volatility_acceleration": {"op": "<", "value": 1.5}}
 IMPORTANT: Never use string values like "positive"/"negative" or booleans for numeric fields.
 
 IMPORTANT: Every scenario MUST include both target_price AND stop_price.
@@ -204,7 +206,16 @@ PLAN RULES:
    - If no clear setup exists, set entry near current price with tight stop — the system will extend unchanged plans automatically.
 
 Operators: "<", ">", "<=", ">=", "==", "in"
-Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio)
+Fields:
+- price: float (USD) — use >, <, >=, <=. Keep within ±0.3% of current price.
+- funding_rate: float (e.g. 0.0001 = 0.01%) — use >, <, >=, <=
+- oi_change_pct: float (e.g. 0.02 = 2% increase) — use >, <, >=, <=
+- cvd_direction: float (-1.0 to +1.0) — use >, <, >=, <=
+- macro_regime: string enum ("risk_on"|"risk_off"|"neutral") — use "in" or "=="
+- volume_surge: float ratio vs 5min avg — use >, <, >=, <=
+- volatility_acceleration: float (current ATR / recent 10-bar avg ATR)
+  IMPORTANT: If volatility_acceleration > 1.5, market is accelerating — tighten conditions or avoid entry.
+  Use to filter out choppy/explosive entries: e.g. {"volatility_acceleration": {"op": "<", "value": 1.5}}
 
 Output JSON:
 {

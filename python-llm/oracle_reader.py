@@ -126,10 +126,11 @@ async def get_all_symbols_snapshot(symbols: list[str]) -> dict:
             "fr": snap.get("funding_rate", 0),
             "cvd_1h": snap.get("cvd_1h", 0),
             "vol_r": snap.get("volatility_regime", "MED"),
+            "vol_acc": round(snap.get("volatility_acceleration", 1.0), 3),  # LLM 조건 생성용
             "atr": snap.get("atr_14", 0),
             "oi_mat": snap.get("oi_matrix", {}).get("interpretation", "N/A"),
             "liq": [
-                {"p": l["price"], "v": l["long_usd"] + l["short_usd"]} 
+                {"p": l["price"], "v": l["long_usd"] + l["short_usd"]}
                 for l in snap.get("top_liquidation_levels", [])[:2] # 상위 2개만
             ]
         }

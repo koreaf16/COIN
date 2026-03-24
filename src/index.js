@@ -108,12 +108,13 @@ const wsConnector = new FuturesWsConnector(symbols, {
   onStatus: (s, d) => { console.log(`[WS] ${s}`, d || ''); },
 });
 
-const restCollector = new FuturesRestCollector(symbols);
+const restCollector = new FuturesRestCollector(symbols, { ringBuffer });
 const stateVectorBuilder = new StateVectorBuilder(ringBuffer, macroCollector, { symbols });
 const llmScheduler = new LLMScheduler(newsCollector, symbols, {
   economicCalendar,
   fearGreedCollector,
   stablecoinCollector,
+  ringBuffer,  // 심볼 스킵 최적화 및 볼륨 기반 정렬용
 });
 const eventMonitor = new EventMonitor(newsCollector, ringBuffer, { symbols });
 const ruleEngine = new RuleEngine(ringBuffer, macroCollector, symbols);

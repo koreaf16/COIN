@@ -18,6 +18,7 @@ const FAPI_BASE = 'https://fapi.binance.com';
 export class FuturesRestCollector {
   constructor(symbols, opts = {}) {
     this.symbols = symbols;
+    this.ringBuffer = opts.ringBuffer || null;
     this.oiIntervalMs = (opts.oiIntervalSec || 30) * 1000;          // 30초
     this.lsIntervalMs = (opts.lsIntervalSec || 300) * 1000;        // 5분 (Binance 한계)
     this.fundingIntervalMs = (opts.fundingIntervalSec || 60) * 1000; // 1분
@@ -26,6 +27,7 @@ export class FuturesRestCollector {
     this._lsTimer = null;
     this._fundingTimer = null;
     this._oiBlacklist = new Set();  // OI 400 반복 심볼 스킵
+    this._lastDeriv = new Map();  // symbol → 최신 파생 데이터 (ringBuffer push용)
     this.stats = { oiCollected: 0, lsCollected: 0, fundingCollected: 0, errors: 0 };
   }
 
@@ -109,6 +111,19 @@ export class FuturesRestCollector {
     } finally {
       await conn.close();
     }
+
+    // RingBuffer 업데이트 — OI + 이전 펀딩비/롱숏비 유지
+    const prev = this._lastDeriv.get(symbol) || {};
+    const deriv = {
+      ...prev,
+      open_interest: oi,
+      oi_change_pct: oiChangePct,
+      funding_rate: prevFr ?? prev.funding_rate ?? 0,
+      long_ratio: prevLr ?? prev.long_ratio ?? 0,
+      short_ratio: prevSr ?? prev.short_ratio ?? 0,
+    };
+    this._lastDeriv.set(symbol, deriv);
+    this.ringBuffer?.pushDerivatives(symbol, deriv);
   }
 
   // ── Long/Short Ratio (5분마다) ──
@@ -148,6 +163,12 @@ export class FuturesRestCollector {
     } finally {
       await conn.close();
     }
+
+    // RingBuffer 업데이트 — 롱숏비만 갱신
+    const prev = this._lastDeriv.get(symbol) || {};
+    const deriv = { ...prev, long_ratio: longRatio, short_ratio: shortRatio };
+    this._lastDeriv.set(symbol, deriv);
+    this.ringBuffer?.pushDerivatives(symbol, deriv);
   }
 
   // ── Funding Rate (1시간마다) ──
@@ -184,6 +205,12 @@ export class FuturesRestCollector {
     } finally {
       await conn.close();
     }
+
+    // RingBuffer 업데이트 — 펀딩비만 갱신
+    const prev = this._lastDeriv.get(symbol) || {};
+    const deriv = { ...prev, funding_rate: fundingRate };
+    this._lastDeriv.set(symbol, deriv);
+    this.ringBuffer?.pushDerivatives(symbol, deriv);
   }
 
   _sleep(ms) {

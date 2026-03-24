@@ -382,6 +382,16 @@ export class Executor {
     const deriv = snapshot.derivatives || {};
     const mark = snapshot.markPrice || {};
 
+    // CVD 방향: 최근 60초 체결 (stop_conditions에서 cvd_direction 필드 사용)
+    const recentTrades = this.ringBuffer.getTradesWindow(symbol, 60);
+    let buyVol = 0, sellVol = 0;
+    for (const t of recentTrades) {
+      if (t.isBuyerMaker) sellVol += t.qty;
+      else buyVol += t.qty;
+    }
+    const totalVol = buyVol + sellVol;
+    const cvd_direction = totalVol > 0 ? (buyVol - sellVol) / totalVol : 0;
+
     // DB에서 최신 OI Matrix 정보 가져오기
     let price_dir_1h = 'FLAT';
     let oi_dir_1h = 'FLAT';
@@ -403,7 +413,7 @@ export class Executor {
       price: snapshot.price,
       funding_rate: mark.fundingRate || deriv.funding_rate || 0,
       oi_change_pct: deriv.oi_change_pct || 0,
-      cvd_direction: 0,
+      cvd_direction,
       volume_surge: 1.0,
       macro_regime: 'neutral',
       price_dir_1h,
