@@ -204,7 +204,7 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
           const markers: any[] = [];
           const isLong = direction === 'LONG';
 
-          // 진입 마커 — 진입 캔들이 데이터 범위 안에 있을 때만 표시
+          // 진입 마커
           if (entryTime) {
             const entryTimeET = entryTime + tzOffset;
             let markerTime = candles[0].time;
@@ -214,25 +214,21 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
               if (diff < minDiff) { minDiff = diff; markerTime = c.time; }
             }
 
-            // 가장 가까운 캔들이 5초 이내일 때만 마커 표시
-            // (진입 시점이 데이터 범위 밖이면 엉뚱한 위치에 찍히므로 스킵)
-            if (minDiff <= 5) {
-              const etStr = new Date(entryTime * 1000).toLocaleString('en-US', {
-                timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-              });
+            const etStr = new Date(entryTime * 1000).toLocaleString('en-US', {
+              timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+            });
 
-              markers.push({
-                time: markerTime,
-                position: isLong ? 'belowBar' : 'aboveBar',
-                color: '#2962FF',
-                shape: isLong ? 'arrowUp' : 'arrowDown',
-                text: `▶ 진입 $${entryPrice || ''} ${etStr}`,
-                size: 2,
-              });
-            }
+            markers.push({
+              time: markerTime,
+              position: isLong ? 'belowBar' : 'aboveBar',
+              color: '#2962FF',
+              shape: isLong ? 'arrowUp' : 'arrowDown',
+              text: `▶ 진입 $${entryPrice || ''} ${etStr}`,
+              size: 2,
+            });
           }
 
-          // 청산 마커 — 청산 캔들이 데이터 범위 안에 있을 때만 표시
+          // 청산 마커
           if (exitTime) {
             const exitTimeET = exitTime + tzOffset;
             let markerTime = candles[candles.length - 1].time;
@@ -242,20 +238,18 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
               if (diff < minDiff) { minDiff = diff; markerTime = c.time; }
             }
 
-            if (minDiff <= 5) {
-              const etStr = new Date(exitTime * 1000).toLocaleString('en-US', {
-                timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-              });
+            const etStr = new Date(exitTime * 1000).toLocaleString('en-US', {
+              timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+            });
 
-              markers.push({
-                time: markerTime,
-                position: isLong ? 'aboveBar' : 'belowBar',
-                color: '#FF6D00',
-                shape: isLong ? 'arrowDown' : 'arrowUp',
-                text: `■ 청산 $${exitPrice || ''} ${etStr}`,
-                size: 2,
-              });
-            }
+            markers.push({
+              time: markerTime,
+              position: isLong ? 'aboveBar' : 'belowBar',
+              color: '#FF6D00',
+              shape: isLong ? 'arrowDown' : 'arrowUp',
+              text: `■ 청산 $${exitPrice || ''} ${etStr}`,
+              size: 2,
+            });
           }
 
           // 시간순 정렬 후 마커 세팅
@@ -278,16 +272,15 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
             chartRef.current?.timeScale().scrollToRealTime();
           }
         } else {
-          // 증분 업데이트 — 마지막 캔들만 업데이트 (이전 캔들 update 시 시간 역전 에러 방지)
-          try {
-            const last = candles[candles.length - 1];
-            const lastVol = volumes[volumes.length - 1];
-            if (last) candleRef.current?.update(last);
-            if (lastVol) volumeRef.current?.update(lastVol);
-            // 라인 끝점 연장
-            if (entryPrice) entryLineSeriesRef.current?.update({ time: lastTime, value: entryPrice });
-            if (exitPrice) exitLineSeriesRef.current?.update({ time: lastTime, value: exitPrice });
-          } catch { /* 시간 역전 무시 */ }
+          // 증분 업데이트
+          const startIdx = Math.max(0, candles.length - 3);
+          for (let i = startIdx; i < candles.length; i++) {
+            candleRef.current?.update(candles[i]);
+            volumeRef.current?.update(volumes[i]);
+          }
+          // 라인 끝점 연장
+          if (entryPrice) entryLineSeriesRef.current?.update({ time: lastTime, value: entryPrice });
+          if (exitPrice) exitLineSeriesRef.current?.update({ time: lastTime, value: exitPrice });
         }
 
         prevCountRef.current = candles.length;
