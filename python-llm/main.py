@@ -26,16 +26,16 @@ from fastapi import FastAPI
 from app_utils import lifespan, setup_logging
 from models import (
     SentimentRequest, BriefingRequest, ScenarioRequest, 
-    UnifiedPlanRequest, UnifiedPlanResolveRequest, EventRequest, ValidatePositionRequest, 
+    UnifiedPlanRequest, EventRequest, ValidatePositionRequest, 
     EmbedRequest, TestRequest
 )
-from config import LLM_ROUTING, LOCAL_LLM_MODEL, LOCAL_LLM_URL, TASK_REASONING_EFFORT, LOCAL_LLM_REASONING_EFFORT
+from config import LLM_ROUTING, LOCAL_LLM_MODEL, LOCAL_LLM_PROVIDER, LOCAL_LLM_URL, TASK_REASONING_EFFORT, LOCAL_LLM_REASONING_EFFORT
 from embedder import encode
-from llm import generate, get_active_calls, _active_calls, _OLLAMA_AVAILABLE
-from llm_utils import extract_selected_id, parse_json_response
+from llm import generate, get_active_calls, _active_calls, _claude_cli, _gemini_cli, _codex_cli, _use_direct, _OLLAMA_AVAILABLE
+from llm_utils import parse_json_response
 from oracle_reader import (
     get_all_symbols_snapshot, get_macro_snapshot, get_market_snapshot,
-    get_recent_briefing, get_recent_events, get_recent_losses, get_recent_sentiment, get_similar_states
+    get_recent_briefing, get_recent_losses, get_recent_sentiment, get_similar_states
 )
 from prompts import (
     SENTIMENT_SYSTEM, SYSTEM_PROMPT, UNIFIED_PLAN_SELECTOR_SYSTEM, VALIDATE_SYSTEM,
@@ -366,6 +366,12 @@ def _fallback_validate_position(symbol: str, entry_reasoning: Dict[str, Any], sn
 
 
 def _select_route(requested_provider: str, task_type: str) -> str:
+    if task_type == "test":
+        if requested_provider in ("claude_cli", "claude"):
+            return "claude"
+        if requested_provider in ("gemini_cli", "gemini"):
+            return "gemini"
+        return "local"
     return "local"
 
 
@@ -420,65 +426,6 @@ def _fallback_unified_plan(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
     logging.warning("[LLM] Unified plan fallback selected top candidate %s", best.get("id"))
     return {"plan": best, "_fallback": True}
 
-
-async def _prepare_unified_plan_context(req: UnifiedPlanRequest | UnifiedPlanResolveRequest):
-    snaps, macro, *rest = await asyncio.gather(
-        get_all_symbols_snapshot(req.symbols), get_macro_snapshot(),
-        *[get_recent_losses(s, limit=2) for s in req.symbols],
-        *[get_recent_events(s, limit=2) for s in req.symbols],
-    )
-    split = len(req.symbols)
-    loss_res = rest[:split]
-    event_res = rest[split:]
-    losses = {s: l for s, l in zip(req.symbols, loss_res) if l}
-    events = {s: e for s, e in zip(req.symbols, event_res) if e}
-    candidates = build_unified_plan_candidates(snaps)
-    candidates.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
-    return snaps, macro, losses, events, candidates
-
-
-async def _select_unified_plan_id(
-    candidates: List[Dict[str, Any]],
-    macro: Dict[str, Any],
-    req: UnifiedPlanRequest | UnifiedPlanResolveRequest,
-    losses: Optional[Dict[str, Any]] = None,
-    recent_events: Optional[Dict[str, Any]] = None,
-) -> tuple[str, int, str]:
-    prompt = build_unified_plan_selector_prompt(
-        candidates,
-        macro,
-        req.event_calendar,
-        req.fear_greed,
-        req.stablecoin,
-        losses,
-        recent_events,
-    )
-    route = _select_route(req.provider, "unified_plan")
-    max_tok = 64
-
-    sem = cloud_sem if route == "cloud" else plan_sem
-    async with sem:
-        text, ms, _ = await generate(prompt, UNIFIED_PLAN_SELECTOR_SYSTEM, max_tok, "unified_plan", route_override=route)
-
-    result = parse_json_response(text)
-    selected_id = extract_selected_id(text, result)
-    return selected_id, ms, route
-
-
-def _resolve_unified_plan(selected_id: str, candidates: List[Dict[str, Any]], snaps: Dict[str, Any]) -> Dict[str, Any]:
-    candidate_map = {c["id"]: c for c in candidates if c.get("id")}
-    selected_plan = candidate_map.get(selected_id) if isinstance(selected_id, str) else None
-    if not selected_plan:
-        logging.warning("[LLM] Unified plan resolve received empty/invalid selected_id; using fallback candidate")
-        fallback = _fallback_unified_plan(candidates)
-        selected_plan = fallback.get("plan")
-    if selected_plan:
-        selected_plan.setdefault("confidence", 0.5)
-
-    normalized_result = {"plan": selected_plan}
-    validated = validate_unified_plan_response(normalized_result, snaps)
-    return validated["result"]
-
 @app.get("/api/health")
 async def health() -> Dict[str, Any]:
     return {"status": "ok", "version": "v2", "timestamp": time.time()}
@@ -490,29 +437,9 @@ async def llm_active() -> Dict[str, Any]:
 @app.post("/api/sentiment")
 async def sentiment(req: SentimentRequest) -> Dict[str, Any]:
     prompt = build_sentiment_prompt(req.news_items)
-    system = (
-        "Analyze crypto/macro news and output exactly one JSON object. "
-        "No markdown, no prose, no bullet points, no code fences. "
-        "Return only this schema: "
-        '{"sentiment":<float>,"intensity":"<low|medium|high>","key_topic":"<main topic in 5 words>",'
-        '"source_count":<int>,"confidence":<float>}.'
-    )
     async with sentiment_sem:
-        text, _, _ = await generate(prompt, system, 300, "sentiment")
+        text, _, _ = await generate(prompt, SENTIMENT_SYSTEM, 300, "sentiment")
     result = parse_json_response(text)
-    if not isinstance(result, dict) or not result:
-        repair_prompt = f"""Convert the following assistant output into exactly one valid JSON object.
-Do not explain anything. Do not add markdown. Do not add code fences.
-
-Assistant output:
-{text}
-
-Required JSON keys:
-sentiment, intensity, key_topic, source_count, confidence
-"""
-        async with sentiment_sem:
-            repaired_text, _, _ = await generate(repair_prompt, system, 180, "sentiment")
-        result = parse_json_response(repaired_text)
     if not result:
         logging.warning("[LLM] Sentiment fallback used after empty LLM output")
         result = _fallback_sentiment(req.news_items)
@@ -522,10 +449,10 @@ sentiment, intensity, key_topic, source_count, confidence
 
 @app.post("/api/briefing")
 async def briefing(req: BriefingRequest) -> Dict[str, Any]:
-    snap, sent, similar, recent_events = await asyncio.gather(
-        get_market_snapshot(req.symbol), get_recent_sentiment(), get_similar_states(req.symbol), get_recent_events(req.symbol, limit=3)
+    snap, sent, similar = await asyncio.gather(
+        get_market_snapshot(req.symbol), get_recent_sentiment(), get_similar_states(req.symbol)
     )
-    prompt = build_briefing_prompt(snap, sent, similar, recent_events)
+    prompt = build_briefing_prompt(snap, sent, similar)
     async with analysis_sem:
         text, _, _ = await generate(prompt, SYSTEM_PROMPT, 1500, "briefing")
     result = parse_json_response(text)
@@ -538,20 +465,11 @@ async def briefing(req: BriefingRequest) -> Dict[str, Any]:
 
 @app.post("/api/scenario")
 async def scenario(req: ScenarioRequest) -> Dict[str, Any]:
-    snap, similar, losses, briefing, recent_events = await asyncio.gather(
+    snap, similar, losses, briefing = await asyncio.gather(
         get_market_snapshot(req.symbol), get_similar_states(req.symbol),
-        get_recent_losses(req.symbol), get_recent_briefing(req.symbol), get_recent_events(req.symbol, limit=5)
+        get_recent_losses(req.symbol), get_recent_briefing(req.symbol)
     )
-    prompt = build_scenario_prompt(
-        snap,
-        briefing or {},
-        similar,
-        req.event_calendar,
-        req.fear_greed,
-        req.stablecoin,
-        losses,
-        recent_events,
-    )
+    prompt = build_scenario_prompt(snap, briefing or {}, similar, req.event_calendar, req.fear_greed, req.stablecoin, losses)
     async with analysis_sem:
         text, _, _ = await generate(prompt, SYSTEM_PROMPT, 2000, "scenario")
     result = parse_json_response(text)
@@ -564,18 +482,45 @@ async def scenario(req: ScenarioRequest) -> Dict[str, Any]:
 
 @app.post("/api/unified-plan")
 async def unified_plan(req: UnifiedPlanRequest) -> Dict[str, Any]:
-    snaps, macro, losses, recent_events, candidates = await _prepare_unified_plan_context(req)
+    snaps, macro, *loss_res = await asyncio.gather(
+        get_all_symbols_snapshot(req.symbols), get_macro_snapshot(),
+        *[get_recent_losses(s, limit=2) for s in req.symbols]
+    )
+    losses = {s: l for s, l in zip(req.symbols, loss_res) if l}
+    candidates = build_unified_plan_candidates(snaps)
+    candidates.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
     candidates = candidates[:20]
     if not candidates:
         return {"plan": None}
 
-    selected_id, ms, route = await _select_unified_plan_id(candidates, macro, req, losses, recent_events)
+    prompt = build_unified_plan_selector_prompt(candidates, macro, req.event_calendar, req.fear_greed, req.stablecoin, losses)
+    
+    route = _select_route(req.provider, "unified_plan")
+    max_tok = 64
+    max_tok = 256
+    
+    sem = cloud_sem if route == "cloud" else plan_sem
+    async with sem:
+        text, ms, _ = await generate(prompt, UNIFIED_PLAN_SELECTOR_SYSTEM, max_tok, "unified_plan", route_override=route)
+    
+    result = parse_json_response(text)
     candidate_map = {c["id"]: c for c in candidates if c.get("id")}
-    if selected_id not in candidate_map:
+    selected_id = result.get("selected_id")
+    if not isinstance(selected_id, str) or not selected_id.strip():
         selected_id = ""
-    filtered = _resolve_unified_plan(selected_id, candidates, snaps)
-    logging.info(f"[LLM] Unified plan selected_id: {selected_id or 'EMPTY'} in {ms}ms ({route})")
-    logging.info(f"[LLM] Unified plan resolved plan(s): {1 if filtered.get('plan') else 0}")
+
+    selected_plan = candidate_map.get(selected_id) if isinstance(selected_id, str) else None
+    if not selected_plan:
+        logging.warning("[LLM] Unified plan selector returned empty/invalid output; using fallback candidate")
+        fallback = _fallback_unified_plan(candidates)
+        selected_plan = fallback.get("plan")
+    if selected_plan:
+        selected_plan.setdefault("confidence", 0.5)
+    normalized_result = {"plan": selected_plan}
+
+    validated = validate_unified_plan_response(normalized_result, snaps)
+    filtered = validated["result"]
+    logging.info(f"[LLM] Unified plan: {1 if filtered.get('plan') else 0} plan(s) in {ms}ms ({route})")
     return filtered
 
 @app.post("/api/interpret-event")
@@ -619,16 +564,23 @@ async def test_llm(req: TestRequest) -> Dict[str, Any]:
 
 @app.get("/api/llm-status")
 async def llm_status() -> Dict[str, Any]:
+    claude_cli = bool(_claude_cli)
+    gemini_cli = bool(_gemini_cli)
     local_status = {
-        "available": bool(LOCAL_LLM_URL) and _OLLAMA_AVAILABLE,
-        "provider": "ollama",
+        "available": bool(_codex_cli) if LOCAL_LLM_PROVIDER == "codex" else bool(LOCAL_LLM_URL),
+        "provider": LOCAL_LLM_PROVIDER,
         "model": LOCAL_LLM_MODEL,
         "url": LOCAL_LLM_URL,
-        "backend_available": _OLLAMA_AVAILABLE,
+        "backend_available": _OLLAMA_AVAILABLE if LOCAL_LLM_PROVIDER == "ollama" else True,
+        "direct": _use_direct,
+        "cli": bool(_codex_cli),
     }
     return {
         "local": local_status,
         "local_llm": local_status,
+        "claude_cli": {"available": claude_cli, "path": _claude_cli, "model": "claude-opus-4-6"},
+        "gemini_cli": {"available": gemini_cli, "path": _gemini_cli, "model": "gemini-3.1-pro-preview"},
+        "cloud": {"claude": claude_cli, "gemini": gemini_cli},
         "routing": LLM_ROUTING,
         "effort": {"default": LOCAL_LLM_REASONING_EFFORT, "tasks": TASK_REASONING_EFFORT}
     }
