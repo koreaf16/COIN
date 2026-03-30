@@ -35,7 +35,7 @@ type: project
 - 수정: numVector null 체크 후 return
 
 **Bug 8 - Python LLM 서버 포트 불일치** (package.json, .env.local)
-- run.bat=2002, package.json=8000 불일치
+- run.bat=2002, start.sh=2002 불일치
 - 수정: package.json llm 스크립트를 포트 2002로 통일
 
 **시스템 현황:**

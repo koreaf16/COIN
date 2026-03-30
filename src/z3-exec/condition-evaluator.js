@@ -1,22 +1,106 @@
 /**
- * Z3 Condition Evaluator — JSON 조건 파서/평가기
+ * @module 조건 평가기
+ * @description 실행 계획의 진입 및 청산 조건을 현재 시장 데이터와 대조하여 평가한다.
  *
- * execution_plan.entry_conditions JSON을 현재 데이터와 대조.
- * 지원 연산자: <, >, <=, >=, ==, in
+ * ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+ * │ Execution    │ ───→ │ Condition    │ ───→ │ Signal /     │
+ * │ Plan         │      │ Evaluator    │      │ Exit         │
+ * └──────────────┘      └──────────────┘      └──────────────┘
+ *                              ↑
+ *                       ┌──────────────┐
+ *                       │ Market Data  │
+ *                       │ (Snapshot)   │
+ *                       └──────────────┘
+ *
+ * @zone z3-exec
+ * @dependencies None
  */
 
+/**
+ * LLM 응답의 conditions를 정규화
+ * flat 형식 {"field":"x","op":"<","value":0} → nested {"x":{"op":"<","value":0}}
+ * 배열 형식 [{field,op,value}, ...] → nested
+ * 빈값/null → {}
+ * @param {object|array} cond
+ * @returns {object}
+ */
+export function normalizeConditions(cond) {
+  if (!cond || typeof cond !== 'object') return {};
+  const keys = Object.keys(cond);
+  if (keys.length === 0) return {};
+
+  // Reject placeholder shapes like {"field": {"op":"<","value":0}}.
+  if (keys.length === 1 && keys[0] === 'field') {
+    const maybeCondition = cond.field;
+    if (maybeCondition && typeof maybeCondition === 'object' && 'op' in maybeCondition && 'value' in maybeCondition) {
+      return {};
+    }
+  }
+
+  // flat 형식: top-level에 field, op, value
+  if (keys.includes('field') && keys.includes('op') && 'value' in cond) {
+    const fieldName = cond.field;
+    if (typeof fieldName === 'string' && fieldName) {
+      return { [fieldName]: { op: cond.op, value: cond.value } };
+    }
+    return {};
+  }
+
+  // 배열 형식: [{field, op, value}, ...]
+  if (Array.isArray(cond)) {
+    const result = {};
+    for (const item of cond) {
+      if (item && typeof item === 'object' && item.field && item.op && 'value' in item) {
+        result[item.field] = { op: item.op, value: item.value };
+      }
+    }
+    return result;
+  }
+
+  return cond;
+}
+
+/**
+ * entry_conditions가 유효한지 검증 (최소 1개 이상의 op/value 쌍 필요)
+ * @param {object} cond
+ * @returns {boolean}
+ */
+export function hasValidConditions(cond) {
+  if (!cond || typeof cond !== 'object') return false;
+  const keys = Object.keys(cond);
+  if (keys.length === 0) return false;
+  if (keys.length === 1 && keys[0] === 'field') return false;
+  for (const v of Object.values(cond)) {
+    if (v && typeof v === 'object' && 'op' in v && 'value' in v) return true;
+  }
+  return false;
+}
+
+/**
+ * 조건 목록 평가
+ * @param {object} conditions
+ * @param {object} currentData
+ * @param {string|null} direction - 'LONG', 'SHORT' or null
+ * @returns {{met: boolean, details: Array}}
+ */
 export function evaluateConditions(conditions, currentData, direction) {
   if (!conditions || typeof conditions !== 'object') return { met: false, details: [] };
+
+  // flat 형식 방어 (DB에 이미 저장된 데이터 대응)
+  conditions = normalizeConditions(conditions);
+
+  if (Object.keys(conditions).length === 0) {
+    return { met: false, details: [{ field: 'EMPTY_CONDITIONS', operator: '==', expected: 'non-empty', actual: '{}', met: false }] };
+  }
 
   const details = [];
   let allMet = true;
 
   // ── [심각한 충돌 감지 (Conflict Detection)] ──
-  // RIVERUSDT 사례 반성: 하락장(Price DOWN)에서 신규 숏 진입(OI UP) 시 롱 진입 금지
   if (direction === 'LONG') {
-    const priceDir = currentData['price_dir_1h']; // 'UP','DOWN','FLAT'
-    const oiDir = currentData['oi_dir_1h'];       // 'UP','DOWN','FLAT'
-    
+    const priceDir = currentData['price_dir_1h'];
+    const oiDir = currentData['oi_dir_1h'];
+
     if (priceDir === 'DOWN' && oiDir === 'UP') {
       details.push({
         field: 'CONFLICT_FILTER',
@@ -33,7 +117,7 @@ export function evaluateConditions(conditions, currentData, direction) {
   if (direction === 'SHORT') {
     const priceDir = currentData['price_dir_1h'];
     const oiDir = currentData['oi_dir_1h'];
-    
+
     if (priceDir === 'UP' && oiDir === 'UP') {
       details.push({
         field: 'CONFLICT_FILTER',
@@ -65,11 +149,15 @@ export function evaluateConditions(conditions, currentData, direction) {
   return { met: allMet, details };
 }
 
+/**
+ * 데이터 객체에서 필드 경로에 해당하는 값 추출 (예: 'markPrice.fundingRate')
+ * @param {string} field
+ * @param {object} data
+ * @returns {any}
+ */
 function resolveValue(field, data) {
-  // 직접 필드
   if (data[field] !== undefined) return data[field];
 
-  // 중첩 필드 (derivatives.funding_rate 등)
   const parts = field.split('.');
   let val = data;
   for (const p of parts) {
@@ -79,6 +167,12 @@ function resolveValue(field, data) {
   return val;
 }
 
+/**
+ * 단일 조건 평가
+ * @param {object} condition
+ * @param {any} currentValue
+ * @returns {boolean}
+ */
 function evaluateSingle(condition, currentValue) {
   if (!condition || condition.op === undefined) return false;
   if (currentValue === undefined || currentValue === null) return false;

@@ -1,13 +1,29 @@
 /**
- * Z3 Rule Engine — execution_plan 조건 실시간 평가
- * L2 Strategy Engine을 완전 대체
+ * @module 룰 엔진
+ * @description 실행 계획(Execution Plan)의 진입 조건을 실시간으로 평가하여 매매 시그널을 생성한다.
  *
- * 1초마다: ACTIVE 플랜의 entry_conditions를 현재 데이터와 대조
- * 모든 조건 충족 → 시그널 발행 → executor로 전달
+ * ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+ * │ Plan Cache   │ ───→ │ Rule Engine  │ ───→ │ Executor     │
+ * │ (Active)     │      │ (Evaluate)   │      │ (Trade)      │
+ * └──────────────┘      └──────────────┘      └──────────────┘
+ *                              ↑
+ *                       ┌──────────────┐
+ *                       │ Market       │
+ *                       │ Guards       │
+ *                       └──────────────┘
+ *
+ * @zone z3-exec
+ * @dependencies hot-reload.js, plan-cache.js, market-guards.js, logger.js, query-loader.js
  */
 
-import { evaluateConditions } from './condition-evaluator.js';
+import { hotReloader } from '../shared/hot-reload.js';
+import { computeSwingFeatures } from '../shared/swing-features.js';
 import { PlanCache } from './plan-cache.js';
+import { logger } from '../shared/logger.js';
+import * as Guard from './market-guards.js';
+import { loadQueries } from '../shared/query-loader.js';
+
+const queries = loadQueries('z3-exec/rule-engine');
 
 export class RuleEngine {
   constructor(ringBuffer, macroCollector, symbols, opts = {}) {
@@ -15,37 +31,44 @@ export class RuleEngine {
     this.macroCollector = macroCollector;
     this.symbols = symbols;
     this.economicCalendar = opts.economicCalendar || null;
-    this.intervalMs = (opts.intervalMs || 5000); // 스윙: 5초 (단타 1초 불필요)
+    this.intervalMs = (opts.intervalMs || 5000);
 
     this.planCache = new PlanCache({ refreshIntervalSec: opts.cacheRefreshSec || 10 });
     this._timer = null;
     this.checkCount = 0;
     this.signalCount = 0;
     this._eventPauseLogged = false;
-    this._evaluating = false; // 중복 실행 방지
+    this._evaluating = false;
+    this._guardBlockLog = new Map();
 
-    this.onSignal = null; // 콜백: (signal) => void
+    this.onSignal = null;
   }
 
-  start() {
-    this.planCache.start();
-    this._timer = setInterval(() => this._evaluate(), this.intervalMs);
-    console.log(`[Z3-Rule] Engine started (interval=${this.intervalMs}ms)`);
+  async start() {
+    try {
+      const ceAbsPath = new URL('./condition-evaluator.js', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1');
+      await hotReloader.register('condition-evaluator', ceAbsPath);
+
+      this.planCache.start();
+      this._timer = setInterval(() => this._evaluate(), this.intervalMs);
+      logger.info(`[Z3-Rule] Engine started (interval=${this.intervalMs}ms, hot-reload=ON)`);
+    } catch (err) {
+      logger.error(`[Z3-Rule] Start failed: ${err.message}`);
+    }
   }
 
   stop() {
     if (this._timer) clearInterval(this._timer);
     this.planCache.stop();
-    console.log(`[Z3-Rule] Stopped (checks=${this.checkCount}, signals=${this.signalCount})`);
+    logger.info(`[Z3-Rule] Stopped (checks=${this.checkCount}, signals=${this.signalCount})`);
   }
 
   async _evaluate() {
-    if (this._evaluating) return; // 이전 평가 아직 진행 중 → 스킵
+    if (this._evaluating) return;
     this._evaluating = true;
     this.checkCount++;
 
     try {
-      // 고임팩트 경제 이벤트 ±15분 이내 → 진입 일시정지
       if (this._isEventWindow()) return;
 
       for (const symbol of this.symbols) {
@@ -56,13 +79,16 @@ export class RuleEngine {
         if (!currentData.price) continue;
 
         for (const plan of plans) {
+          const { evaluateConditions } = hotReloader.get('condition-evaluator');
           const result = evaluateConditions(plan.entryConditions, currentData, plan.direction);
           if (result.met) {
             await this._emitSignal(plan, currentData, result.details);
-            break; // 심볼당 1개 시그널만 (이중 진입 방지)
+            break;
           }
         }
       }
+    } catch (err) {
+      logger.error(`[Z3-Rule] Evaluate error: ${err.message}`);
     } finally {
       this._evaluating = false;
     }
@@ -73,47 +99,32 @@ export class RuleEngine {
     const deriv = snapshot.derivatives || {};
     const mark = snapshot.markPrice || {};
 
-    // DB에서 최신 OI Matrix + Volatility Acceleration 가져오기 (Conflict Filter / 조건 평가용)
-    let price_dir_1h = 'FLAT';
-    let oi_dir_1h = 'FLAT';
-    let volatility_acceleration = 1.0;
+    let price_dir_1h = 'FLAT', oi_dir_1h = 'FLAT', volatility_acceleration = 1.0;
     try {
-      const { getPool: getDbPool } = await import('../shared/db.js');
-      const conn = await getDbPool().getConnection();
+      const { getPool } = await import('../shared/db.js');
+      const conn = await getPool().getConnection();
       try {
-        const oiResult = await conn.execute(
-          `SELECT price_dir, oi_dir FROM z1_oi_matrix WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY`,
-          { sym: symbol }
-        );
-        if (oiResult.rows && oiResult.rows.length > 0) {
-          [price_dir_1h, oi_dir_1h] = oiResult.rows[0];
-        }
-        const vaResult = await conn.execute(
-          `SELECT volatility_acceleration FROM z1_market_states WHERE symbol = :sym ORDER BY ts DESC FETCH FIRST 1 ROW ONLY`,
-          { sym: symbol }
-        );
-        if (vaResult.rows && vaResult.rows.length > 0) {
-          volatility_acceleration = vaResult.rows[0][0] ?? 1.0;
-        }
+        const oiR = await conn.execute(queries.getOiMatrix, { sym: symbol });
+        if (oiR.rows?.length) [price_dir_1h, oi_dir_1h] = oiR.rows[0];
+        const vaR = await conn.execute(queries.getMarketState, { sym: symbol });
+        if (vaR.rows?.length) volatility_acceleration = vaR.rows[0][0] ?? 1.0;
       } finally { await conn.close(); }
-    } catch {}
+    } catch (err) {
+      logger.warn(`[Z3-Rule] DB fetch error for ${symbol}: ${err.message}`);
+    }
 
-    // CVD 방향: 최근 300초 체결에서 매수/매도 비율 (스윙: 5분 창)
     const recentTrades = this.ringBuffer.getTradesWindow(symbol, 300);
     let buyVol = 0, sellVol = 0;
-    for (const t of recentTrades) {
-      if (t.isBuyerMaker) sellVol += t.qty;
-      else buyVol += t.qty;
-    }
+    for (const t of recentTrades) { if (t.isBuyerMaker) sellVol += t.qty; else buyVol += t.qty; }
     const totalVol = buyVol + sellVol;
     const cvdDirection = totalVol > 0 ? (buyVol - sellVol) / totalVol : 0;
 
-    // 볼륨 서지: 최근 300초 vs 최근 3600초 평균 (스윙: 5분 vs 1시간)
     const trades1h = this.ringBuffer.getTradesWindow(symbol, 3600);
     let vol1h = 0;
     for (const t of trades1h) vol1h += t.qty;
-    const avgVol5m = trades1h.length > 0 ? (vol1h / 12) : 1; // 3600/300=12 구간
-    const volumeSurge = avgVol5m > 0 ? totalVol / avgVol5m : 1.0;
+    const avgVol5m = trades1h.length > 0 ? (vol1h / 12) : 1;
+    const volumeSurge = Math.min(avgVol5m > 0 ? totalVol / avgVol5m : 1.0, 5.0);
+    const swing = this._buildSwingContext(symbol, snapshot.price);
 
     return {
       price: snapshot.price,
@@ -123,32 +134,37 @@ export class RuleEngine {
       open_interest: deriv.open_interest || 0,
       long_ratio: deriv.long_ratio || 0,
       short_ratio: deriv.short_ratio || 0,
+      liq_long_24h: deriv.liq_long_24h || 0,
+      liq_short_24h: deriv.liq_short_24h || 0,
       cvd_direction: cvdDirection,
       macro_regime: this.macroCollector?.getRegime() || 'neutral',
       volume_surge: volumeSurge,
-      price_dir_1h,
-      oi_dir_1h,
-      volatility_acceleration,
+      price_dir_1h, oi_dir_1h, volatility_acceleration,
+      ...swing,
     };
   }
 
-  /** 고임팩트 경제 이벤트 ±15분 내 → true (진입 일시정지) */
+  _buildSwingContext(symbol, currentPrice) {
+    if (!this.ringBuffer || !Number.isFinite(currentPrice)) return {};
+    return computeSwingFeatures({
+      currentPrice,
+      klines1h: this.ringBuffer.getKlines(symbol, '1h'),
+      klines4h: this.ringBuffer.getKlines(symbol, '4h'),
+      klines1d: this.ringBuffer.getKlines(symbol, '1d'),
+      btcKlines1h: this.ringBuffer.getKlines('BTCUSDT', '1h'),
+      btcKlines1d: this.ringBuffer.getKlines('BTCUSDT', '1d'),
+    });
+  }
+
   _isEventWindow() {
     if (!this.economicCalendar) return false;
     const events = this.economicCalendar.getNext24h?.() || [];
     const now = Date.now();
-    const windowMs = 30 * 60 * 1000; // 스윙: 행사 전후 관망 쿽 확대 (30분)
-
     for (const evt of events) {
       const evtTime = new Date(evt.datetime || evt.date).getTime();
-      if (isNaN(evtTime)) continue;
       const impact = (evt.impact || evt.importance || '').toLowerCase();
-      if (impact !== 'high' && impact !== '높음') continue;
-      if (Math.abs(now - evtTime) <= windowMs) {
-        if (!this._eventPauseLogged) {
-          console.log(`[Z3-Rule] EVENT PAUSE: ${evt.title || evt.event} (±15min window)`);
-          this._eventPauseLogged = true;
-        }
+      if ((impact === 'high' || impact === '높음') && Math.abs(now - evtTime) <= 30 * 60 * 1000) {
+        if (!this._eventPauseLogged) { logger.info(`[Z3-Rule] EVENT PAUSE: ${evt.title || evt.event}`); this._eventPauseLogged = true; }
         return true;
       }
     }
@@ -157,40 +173,68 @@ export class RuleEngine {
   }
 
   async _emitSignal(plan, currentData, details) {
-    this.signalCount++;
+    try {
+      const guard = await Guard.checkMarketGuard(plan.symbol, plan.direction, this.ringBuffer);
+      if (guard.blocked) {
+        this._logGuardBlock(plan.id, `GUARD BLOCKED: ${plan.symbol} ${plan.direction} — ${guard.reason}`);
+        return;
+      }
 
-    const signal = {
-      type: 'PLAN_TRIGGERED',
-      planId: plan.id,
-      symbol: plan.symbol,
-      direction: plan.direction,
-      targetPrice: plan.targetPrice,
-      stopPrice: plan.stopPrice,
-      stopConditions: plan.stopConditions,
-      entryConditions: plan.entryConditions,
-      timeStopMin: plan.timeStopMin,
-      confidence: plan.confidence,
-      reasoning: plan.reasoning,
-      currentPrice: currentData.price,
-      evaluationDetails: details,
-      ts: Date.now(),
-    };
+      const counterTrend = await Guard.detectCounterTrend(plan.symbol, plan.direction);
+      if (counterTrend.isCounterTrend && plan.confidence < 0.75) {
+        this._logGuardBlock(plan.id, `COUNTER-TREND BLOCKED: ${plan.symbol} ${plan.direction} conf=${plan.confidence} < 0.75 (${counterTrend.reason})`);
+        return;
+      }
 
-    console.log(`[Z3-Rule] SIGNAL: ${plan.direction} ${plan.symbol} @ $${currentData.price} (plan=${plan.id}, conf=${plan.confidence})`);
+      const structureBlock = this._checkStructureGuard(plan, currentData);
+      if (structureBlock) {
+        this._logGuardBlock(plan.id, `STRUCTURE BLOCKED: ${plan.symbol} ${plan.direction} ${structureBlock}`);
+        return;
+      }
 
-    // 플랜 상태 업데이트
-    await this.planCache.markTriggered(plan.id);
+      if (currentData.volume_surge > 3.0) {
+        if ((plan.direction === 'LONG' && currentData.price_dir_1h === 'DOWN') || (plan.direction === 'SHORT' && currentData.price_dir_1h === 'UP')) {
+          this._logGuardBlock(plan.id, `PANIC_MOVE BLOCKED: ${plan.symbol} ${plan.direction} — volume_surge=${currentData.volume_surge.toFixed(1)}x`);
+          return;
+        }
+      }
 
-    if (this.onSignal) {
-      this.onSignal(signal);
+      this.signalCount++;
+      const signal = {
+        type: 'PLAN_TRIGGERED', planId: plan.id, symbol: plan.symbol, direction: plan.direction,
+        targetPrice: plan.targetPrice, stopPrice: plan.stopPrice, stopConditions: plan.stopConditions,
+        entryConditions: plan.entryConditions, timeStopMin: plan.timeStopMin, confidence: plan.confidence,
+        reasoning: plan.reasoning, currentPrice: currentData.price, evaluationDetails: details,
+        counterTrend: counterTrend.isCounterTrend, ts: Date.now(),
+        _markTriggered: () => this.planCache.markTriggered(plan.id),
+      };
+
+      logger.info(`[Z3-Rule] SIGNAL: ${plan.direction} ${plan.symbol} @ $${currentData.price} (plan=${plan.id}, conf=${plan.confidence}${counterTrend.isCounterTrend ? ', COUNTER-TREND' : ''})`);
+      if (this.onSignal) this.onSignal(signal);
+    } catch (err) {
+      logger.error(`[Z3-Rule] EmitSignal error: ${err.message}`);
     }
   }
 
-  getStats() {
-    return {
-      checkCount: this.checkCount,
-      signalCount: this.signalCount,
-      activePlans: this.planCache.totalActive,
-    };
+  _checkStructureGuard(plan, currentData) {
+    const allowAggressiveCounterTrend = plan.confidence >= 0.9;
+    if (plan.direction === 'LONG') {
+      if (currentData.daily_bias === 'BEARISH' && !allowAggressiveCounterTrend) return 'daily_bias=BEARISH';
+      if (currentData.trend_bias_4h === 'BEARISH' && !allowAggressiveCounterTrend) return 'trend_bias_4h=BEARISH';
+    }
+    if (plan.direction === 'SHORT') {
+      if (currentData.daily_bias === 'BULLISH' && !allowAggressiveCounterTrend) return 'daily_bias=BULLISH';
+      if (currentData.trend_bias_4h === 'BULLISH' && !allowAggressiveCounterTrend) return 'trend_bias_4h=BULLISH';
+    }
+    return null;
   }
+
+  _logGuardBlock(planId, message) {
+    if (Date.now() - (this._guardBlockLog.get(planId) || 0) > 300000) {
+      logger.info(`[Z3-Rule] ${message}`);
+      this._guardBlockLog.set(planId, Date.now());
+    }
+  }
+
+  getStats() { return { checkCount: this.checkCount, signalCount: this.signalCount, activePlans: this.planCache.totalActive }; }
 }

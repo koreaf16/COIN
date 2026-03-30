@@ -1,27 +1,74 @@
 /**
- * Z3 Risk Gate — 진입 전 리스크 체크
- * 기존 L3 RiskGate 확장: 지능형 청산 지원
+ * @module Risk Gate
+ * @description 매매 진입 전 리스크를 검증한다. 계좌 잔고, 동시 포지션 수, 일일 손실 한도, 
+ *              R:R 비율 및 타겟/손절가의 논리적 타당성을 체크한다.
+ *
+ * ┌──────────┐     ┌──────────┐     ┌──────────┐
+ * │ Rule     │ ──→ │ Risk     │ ──→ │ Executor │
+ * │ Engine   │     │ Gate     │     │ (Entry)  │
+ * └──────────┘     └──────────┘     └──────────┘
+ *
+ * @zone z3-exec
+ * @dependencies None
  */
 
+/**
+ * Z3 Risk Gate — 진입 전 리스크 체크
+ */
 export class RiskGate {
+  /**
+   * @param {Object} opts 리스크 설정
+   */
   constructor(opts = {}) {
     this.maxPositionPct = opts.maxPositionPct || 10.0;   // 1회 투자 최대 자본비율
-    this.safetyStopPct = opts.safetyStopPct || 4.0;      // 스윙: 손절폭 확대 (4%)
+    this.safetyStopPct = opts.safetyStopPct || 4.0;
     this.maxDailyLossPct = opts.maxDailyLossPct || 5.0;  // 일일 최대 손실 (%)
-    this.maxOpenTrades = opts.maxOpenTrades || 5;         // 스윙: 동시 5개
-    this.cooldownSec = opts.cooldownSec || 7200;          // 스윙: 2시간 쿨다운
+    this.maxOpenTrades = opts.maxOpenTrades || 5;
     this.maxLeverage = opts.maxLeverage || 3;
-    this.symbolLossCooldownSec = opts.symbolLossCooldownSec || 14400; // 스윙: 심볼별 손절 후 4시간
-    this.symbolReentryCooldownSec = opts.symbolReentryCooldownSec || 21600; // 스윙: 재진입 쿨다운 6시간
 
     this.openTrades = [];
     this.dailyPnl = 0;
-    this.lastExitTime = 0;
-    this._symbolLossTime = new Map(); // symbol → 마지막 손절 시각
-    this._symbolExitTime = new Map(); // symbol → 마지막 청산 시각 (승패 무관)
   }
 
-  check(signal, balance, currentPrice) {
+  /**
+   * 진입 가능 여부를 체크한다.
+   * @param {Object} signal 진입 시그널
+   * @param {number} balance 현재 잔고
+   * @param {number} currentPrice 현재가
+   * @param {string} macroRegime 매크로 상태
+   * @returns {Object} { allowed, reason, positionSize, ... }
+   */
+  check(signal, balance, currentPrice, macroRegime = 'neutral') {
+    // 1. 기본 수량적 한도 체크
+    const limitCheck = this._checkLimits(signal, balance, macroRegime);
+    if (!limitCheck.allowed) return limitCheck;
+
+    // 2. 포지션 사이징 계산
+    const sizing = this._calculateSizing(balance, currentPrice);
+    if (!sizing.allowed) return sizing;
+
+    // 3. 가격(타겟/손절) 논리 검증
+    const priceCheck = this._validatePrices(signal, currentPrice);
+    if (!priceCheck.allowed) return priceCheck;
+
+    // 4. R:R (Risk/Reward) 비율 검증
+    const rrCheck = this._checkRR(signal, currentPrice);
+    if (!rrCheck.allowed) return rrCheck;
+
+    const side = signal.direction === 'LONG' ? 1 : -1;
+    const safetyStop = currentPrice * (1 - side * this.safetyStopPct / 100);
+
+    return {
+      allowed: true,
+      positionSize: sizing.qty,
+      positionValue: sizing.positionValue,
+      safetyStop,
+      leverage: this.maxLeverage,
+    };
+  }
+
+  /** 기본 한도 체크 (동시 포지션, 일일 손실, 중복 진입, 매크로) */
+  _checkLimits(signal, balance, macroRegime) {
     if (this.openTrades.length >= this.maxOpenTrades) {
       return { allowed: false, reason: `동시 포지션 ${this.maxOpenTrades}개 초과` };
     }
@@ -30,90 +77,88 @@ export class RiskGate {
       return { allowed: false, reason: `일일 최대 손실 ${this.maxDailyLossPct}% 초과` };
     }
 
-    const elapsed = (Date.now() - this.lastExitTime) / 1000;
-    if (elapsed < this.cooldownSec && this.lastExitTime > 0) {
-      return { allowed: false, reason: `쿨다운 ${Math.ceil(this.cooldownSec - elapsed)}초` };
-    }
-
     if (this.openTrades.some(t => t.symbol === signal.symbol)) {
       return { allowed: false, reason: `${signal.symbol} 이미 포지션 보유` };
     }
 
-    // 심볼별 재진입 쿨다운 (승패 무관, 모든 청산 후)
-    const symbolExitTs = this._symbolExitTime.get(signal.symbol) || 0;
-    const symbolExitElapsed = (Date.now() - symbolExitTs) / 1000;
-    if (symbolExitElapsed < this.symbolReentryCooldownSec && symbolExitTs > 0) {
-      return { allowed: false, reason: `${signal.symbol} 재진입 쿨다운 ${Math.ceil(this.symbolReentryCooldownSec - symbolExitElapsed)}초` };
+    if (signal.direction === 'LONG' && macroRegime === 'risk_off') {
+      return { allowed: false, reason: `매크로 위험 감지 (risk_off): 롱 진입 금지` };
     }
 
-    // 심볼별 손절 후 추가 쿨다운 (같은 심볼 연속 손절 방지)
-    const symbolLossTs = this._symbolLossTime.get(signal.symbol) || 0;
-    const symbolElapsed = (Date.now() - symbolLossTs) / 1000;
-    if (symbolElapsed < this.symbolLossCooldownSec && symbolLossTs > 0) {
-      return { allowed: false, reason: `${signal.symbol} 손절 후 쿨다운 ${Math.ceil(this.symbolLossCooldownSec - symbolElapsed)}초` };
-    }
+    return { allowed: true };
+  }
 
-    // 포지션 사이징 (Binance minNotional=$100 + stepSize floor 보상)
+  /** 포지션 사이징 및 최소 주문 금액 체크 */
+  _calculateSizing(balance, currentPrice) {
     const rawPositionValue = balance * (this.maxPositionPct / 100);
-    // BTC처럼 stepSize가 큰 심볼은 floor 시 notional이 크게 줄어들 수 있으므로 2배 버퍼
-    const positionValue = Math.max(rawPositionValue, 210);
-    const qty = positionValue / currentPrice;
+    const minNotional = 105; // 바이낸스 최소 $100 + 안전 버퍼 $5
+    
+    let positionValue = rawPositionValue;
+    if (positionValue < minNotional) {
+      if (minNotional > balance * 0.15) {
+        return { allowed: false, reason: `계좌 자산 대비 최소 주문 금액($${minNotional})이 너무 큼` };
+      }
+      positionValue = minNotional;
+    }
 
-    // 안전망 손절 (고정)
-    const side = signal.direction === 'LONG' ? 1 : -1;
-    const safetyStop = currentPrice * (1 - side * this.safetyStopPct / 100);
+    return { 
+      allowed: true, 
+      positionValue, 
+      qty: positionValue / currentPrice 
+    };
+  }
 
-    // [사전 차단] 진입 전 LLM 손절가와 현재가 논리 모순 검증
+  /** 타겟 및 손절가 논리적 타당성 검증 */
+  _validatePrices(signal, currentPrice) {
+    const isLong = signal.direction === 'LONG';
+
+    // 손절가 검증
     if (signal.stopPrice) {
-      const isLong = signal.direction === 'LONG';
-      const isStopValid = isLong 
-        ? signal.stopPrice < currentPrice  // 롱: 손절가가 현재가 아래여야 함
-        : signal.stopPrice > currentPrice; // 숏: 손절가가 현재가 위여야 함
-        
+      const isStopValid = isLong ? signal.stopPrice < currentPrice : signal.stopPrice > currentPrice;
       if (!isStopValid) {
-        return { 
-          allowed: false, 
-          reason: `가격 역전 오류: 현재가($${currentPrice})가 LLM 손절가($${signal.stopPrice})를 이미 돌파함` 
-        };
+        return { allowed: false, reason: `손절가 역전: 현재가($${currentPrice})가 손절가($${signal.stopPrice}) 돌파` };
+      }
+      const stopDistPct = Math.abs(currentPrice - signal.stopPrice) / currentPrice * 100;
+      if (stopDistPct < 1.0) {
+        return { allowed: false, reason: `손절가 너무 가까움: ${stopDistPct.toFixed(2)}% < 1.0%` };
       }
     }
 
-    // [사전 차단] 타겟가가 너무 가까우면 수수료 손실 위험 (최소 0.2% 이격)
+    // 타겟가 검증
     if (signal.targetPrice) {
-      const isLong = signal.direction === 'LONG';
       const distPct = Math.abs(signal.targetPrice - currentPrice) / currentPrice * 100;
-      const isTargetValid = isLong 
-        ? signal.targetPrice > currentPrice
-        : signal.targetPrice < currentPrice;
-
+      const isTargetValid = isLong ? signal.targetPrice > currentPrice : signal.targetPrice < currentPrice;
       if (!isTargetValid) {
-        return { allowed: false, reason: `타겟가 역전: 현재가($${currentPrice})가 타겟($${signal.targetPrice})을 이미 도달함` };
+        return { allowed: false, reason: `타겟가 역전: 현재가($${currentPrice})가 타겟 도달` };
       }
       if (distPct < 0.2) {
-        return { allowed: false, reason: `타겟가 너무 가까움: ${distPct.toFixed(3)}% < 최소 0.2% (수수료 손실 위험)` };
+        return { allowed: false, reason: `타겟가 너무 가까움: ${distPct.toFixed(3)}% < 0.2%` };
+      }
+      if (distPct > 15.0) {
+        return { allowed: false, reason: `타겟가 비현실적: ${distPct.toFixed(1)}% > 15%` };
       }
     }
 
-    return {
-      allowed: true,
-      positionSize: qty,
-      positionValue,
-      safetyStop,
-      leverage: this.maxLeverage,
-    };
+    return { allowed: true };
+  }
+
+  /** R:R (Risk/Reward) 비율 체크 */
+  _checkRR(signal, currentPrice) {
+    if (signal.targetPrice && signal.stopPrice) {
+      const rewardDist = Math.abs(signal.targetPrice - currentPrice);
+      const riskDist = Math.abs(currentPrice - signal.stopPrice);
+      if (riskDist > 0) {
+        const rrRatio = rewardDist / riskDist;
+        if (rrRatio < 2.0) {
+          return { allowed: false, reason: `R:R 부족: ${rrRatio.toFixed(2)} < 1.5` };
+        }
+      }
+    }
+    return { allowed: true };
   }
 
   addTrade(trade) { this.openTrades.push(trade); }
   removeTrade(tradeId) { this.openTrades = this.openTrades.filter(t => t.id !== tradeId); }
-  recordExit(pnl, symbol) {
-    this.dailyPnl += pnl;
-    this.lastExitTime = Date.now();
-    if (symbol) {
-      // 모든 청산: 재진입 쿨다운 기록
-      this._symbolExitTime.set(symbol, Date.now());
-      // 손실 시 추가 손절 쿨다운 기록
-      if (pnl < 0) this._symbolLossTime.set(symbol, Date.now());
-    }
-  }
+  recordExit(pnl) { this.dailyPnl += pnl; }
   resetDaily() { this.dailyPnl = 0; }
 }

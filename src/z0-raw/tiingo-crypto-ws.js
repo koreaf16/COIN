@@ -1,22 +1,31 @@
 /**
- * Z0 Tiingo Crypto WebSocket — Pro 실시간 크립토 가격
+ * @module Tiingo 크립토 WebSocket
+ * @description Tiingo API를 통해 여러 거래소의 실시간 암호화폐 가격 데이터를 수집한다.
  *
- * Tiingo 크립토 WebSocket은 다수 거래소(Binance, Coinbase, Kraken 등) 집계 데이터 제공.
- * Binance Futures WS와 교차검증 + 다른 거래소 가격 차이 감지용.
+ * ┌──────────┐     ┌──────────┐     ┌──────────┐
+ * │ Tiingo   │ ──→ │ Tiingo   │ ──→ │ Price    │
+ * │ WS API   │     │ Crypto WS│     │ Cache    │
+ * └──────────┘     └──────────┘     └──────────┘
+ *                       ↓
+ *                market-guards
+ *                (거래소 간 가격 괴리 감시)
  *
- * WebSocket URL: wss://api.tiingo.com/crypto
- * thresholdLevel: 5 = 모든 Top-of-Book 업데이트
- *
- * Pro 기능: 더 높은 메시지 한도, 모든 거래소 커버리지
+ * @zone z0-raw
+ * @dependencies logger.js, config.js, ws
  */
 
 import WebSocket from 'ws';
+import { logger } from "../shared/logger.js";
 import { config } from '../shared/config.js';
 
 const WS_URL = 'wss://api.tiingo.com/crypto';
 const API_KEY = config.tiingo.apiKey;
 
-// Tiingo 심볼 형식: btcusd, ethusd (소문자, USD 페어)
+/**
+ * Tiingo 심볼 형식으로 변환: btcusd, ethusd (소문자, USD 페어)
+ * @param {string} symbol 
+ * @returns {string}
+ */
 function toTiingoTicker(symbol) {
   return symbol.toLowerCase().replace('usdt', 'usd');
 }
@@ -36,135 +45,184 @@ export class TiingoCryptoWs {
     this.onPriceUpdate = opts.onPriceUpdate || null;
   }
 
+  /**
+   * WebSocket 연결 시작
+   */
   start() {
     if (!API_KEY) {
-      console.log('[Z0-Tiingo] No API key, skipping crypto WS');
+      logger.info('[Z0-Tiingo] No API key, skipping crypto WS');
       return;
     }
     this.running = true;
     this._connect();
   }
 
+  /**
+   * WebSocket 연결 중지
+   */
   stop() {
     this.running = false;
-    if (this.ws) { this.ws.close(); this.ws = null; }
-    console.log(`[Z0-Tiingo] Stopped (msgs=${this.stats.messages} trades=${this.stats.trades} quotes=${this.stats.quotes})`);
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    logger.info(`[Z0-Tiingo] Stopped (msgs=${this.stats.messages} trades=${this.stats.trades} quotes=${this.stats.quotes})`);
   }
 
-  /** 특정 심볼의 멀티 거래소 가격 조회 */
+  /**
+   * 특정 심볼의 멀티 거래소 가격 조회
+   */
   getMultiExchangePrices(symbol) {
     const ticker = toTiingoTicker(symbol);
     return this.prices.get(ticker) || {};
   }
 
-  /** 거래소 간 가격 스프레드 계산 (차익거래 기회 감지) */
+  /**
+   * 거래소 간 가격 스프레드 계산 (차익거래 기회 감지)
+   */
   getExchangeSpread(symbol) {
     const prices = this.getMultiExchangePrices(symbol);
     const entries = Object.values(prices).filter(p => p.last > 0);
     if (entries.length < 2) return null;
+    
     const sorted = entries.map(p => p.last).sort((a, b) => a - b);
-    const spreadPct = ((sorted[sorted.length - 1] - sorted[0]) / sorted[0]) * 100;
-    return { min: sorted[0], max: sorted[sorted.length - 1], spreadPct, exchangeCount: entries.length };
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+    const spreadPct = ((max - min) / min) * 100;
+    
+    return { min, max, spreadPct, exchangeCount: entries.length };
   }
 
+  /**
+   * WebSocket 연결 및 이벤트 핸들러 등록
+   * @private
+   */
   _connect() {
     if (!this.running) return;
 
-    console.log(`[Z0-Tiingo] Connecting to crypto WS (attempt ${this.attempt + 1})...`);
+    logger.info(`[Z0-Tiingo] Connecting to crypto WS (attempt ${this.attempt + 1})...`);
     const ws = new WebSocket(WS_URL);
 
-    ws.on('open', () => {
-      this.attempt = 0;
-      this.retryDelay = 2000;
-
-      // 구독 메시지
-      const tickers = this.symbols.map(toTiingoTicker);
-      const subMsg = {
-        eventName: 'subscribe',
-        authorization: API_KEY,
-        eventData: {
-          thresholdLevel: this.thresholdLevel,
-          tickers,
-        },
-      };
-      ws.send(JSON.stringify(subMsg));
-      console.log(`[Z0-Tiingo] Crypto WS connected, subscribing ${tickers.length} tickers`);
-    });
-
-    ws.on('message', (raw) => {
-      try {
-        const msg = JSON.parse(raw);
-        this.stats.messages++;
-        this._handleMessage(msg);
-      } catch {}
-    });
-
-    ws.on('close', (code) => {
-      if (this.running) this._retry();
-    });
-
+    ws.on('open', () => this._onOpen(ws));
+    ws.on('message', (raw) => this._onMessage(raw));
+    ws.on('close', () => { if (this.running) this._retry(); });
     ws.on('error', (err) => {
       this.stats.errors++;
-      console.error(`[Z0-Tiingo] WS error: ${err.message}`);
+      logger.error(`[Z0-Tiingo] WS error: ${err.message}`);
     });
 
     this.ws = ws;
   }
 
-  _handleMessage(msg) {
-    // Tiingo WS 메시지 형식:
-    // messageType: 'A' (trade/quote), 'H' (heartbeat), 'I' (info)
-    if (!msg.messageType) return;
+  /**
+   * WebSocket 연결 시 구독 메시지 전송
+   * @private
+   */
+  _onOpen(ws) {
+    this.attempt = 0;
+    this.retryDelay = 2000;
 
-    if (msg.messageType === 'A' && msg.data) {
-      // data: [messageType, ticker, date, exchange, last, volume, ...]
-      // Trade update: data[0] = 'T', Quote update: data[0] = 'Q'
-      const data = msg.data;
-      if (!Array.isArray(data) || data.length < 6) return;
+    const tickers = this.symbols.map(toTiingoTicker);
+    const subMsg = {
+      eventName: 'subscribe',
+      authorization: API_KEY,
+      eventData: {
+        thresholdLevel: this.thresholdLevel,
+        tickers,
+      },
+    };
+    ws.send(JSON.stringify(subMsg));
+    logger.info(`[Z0-Tiingo] Crypto WS connected, subscribing ${tickers.length} tickers`);
+  }
 
-      const updateType = data[0]; // 'T' = trade, 'Q' = quote
-      const ticker = data[1];     // e.g., 'btcusd'
-      const exchange = data[3];   // e.g., 'binance', 'coinbase'
-      const lastPrice = data[4];
-      const volume = data[5];
-
-      if (!this.prices.has(ticker)) this.prices.set(ticker, {});
-      const exchangePrices = this.prices.get(ticker);
-
-      if (updateType === 'T') {
-        // Trade update
-        exchangePrices[exchange] = {
-          last: lastPrice,
-          volume,
-          ts: Date.now() / 1000,
-          ...(exchangePrices[exchange] || {}),
-          last: lastPrice,
-        };
-        this.stats.trades++;
-      } else if (updateType === 'Q') {
-        // Quote update — data: [Q, ticker, date, exchange, bidSize, bidPrice, midPrice, askSize, askPrice]
-        const bidPrice = data[5];
-        const askPrice = data[8];
-        exchangePrices[exchange] = {
-          ...(exchangePrices[exchange] || {}),
-          bid: bidPrice,
-          ask: askPrice,
-          spread: askPrice - bidPrice,
-          ts: Date.now() / 1000,
-        };
-        this.stats.quotes++;
-      }
-
-      if (this.onPriceUpdate) {
-        this.onPriceUpdate(ticker, exchange, exchangePrices[exchange]);
-      }
+  /**
+   * WebSocket 메시지 수신 핸들러
+   * @private
+   */
+  _onMessage(raw) {
+    try {
+      const msg = JSON.parse(raw);
+      this.stats.messages++;
+      this._handleMessage(msg);
+    } catch (err) {
+      // ignore parse errors
     }
   }
 
+  /**
+   * 메시지 타입에 따른 처리
+   * @private
+   */
+  _handleMessage(msg) {
+    if (!msg.messageType || msg.messageType !== 'A' || !msg.data) return;
+
+    const data = msg.data;
+    if (!Array.isArray(data) || data.length < 6) return;
+
+    const updateType = data[0]; // 'T' = trade, 'Q' = quote
+    const ticker = data[1];     // e.g., 'btcusd'
+    const exchange = data[3];   // e.g., 'binance', 'coinbase'
+
+    if (!this.prices.has(ticker)) {
+      this.prices.set(ticker, {});
+    }
+    const exchangePrices = this.prices.get(ticker);
+
+    if (updateType === 'T') {
+      this._handleTradeUpdate(ticker, exchange, data, exchangePrices);
+    } else if (updateType === 'Q') {
+      this._handleQuoteUpdate(ticker, exchange, data, exchangePrices);
+    }
+
+    if (this.onPriceUpdate) {
+      this.onPriceUpdate(ticker, exchange, exchangePrices[exchange]);
+    }
+  }
+
+  /**
+   * 거래 데이터 처리
+   * @private
+   */
+  _handleTradeUpdate(ticker, exchange, data, exchangePrices) {
+    const lastPrice = data[4];
+    const volume = data[5];
+    
+    exchangePrices[exchange] = {
+      ...(exchangePrices[exchange] || {}),
+      last: lastPrice,
+      volume,
+      ts: Date.now() / 1000,
+    };
+    this.stats.trades++;
+  }
+
+  /**
+   * 호가 데이터 처리
+   * @private
+   */
+  _handleQuoteUpdate(ticker, exchange, data, exchangePrices) {
+    // Quote update — data: [Q, ticker, date, exchange, bidSize, bidPrice, midPrice, askSize, askPrice]
+    const bidPrice = data[5];
+    const askPrice = data[8];
+    
+    exchangePrices[exchange] = {
+      ...(exchangePrices[exchange] || {}),
+      bid: bidPrice,
+      ask: askPrice,
+      spread: askPrice - bidPrice,
+      ts: Date.now() / 1000,
+    };
+    this.stats.quotes++;
+  }
+
+  /**
+   * 재연결 로직
+   * @private
+   */
   _retry() {
     this.attempt++;
     if (this.attempt > 50) {
-      console.error('[Z0-Tiingo] Max retries exceeded');
+      logger.error('[Z0-Tiingo] Max retries exceeded');
       return;
     }
     setTimeout(() => this._connect(), this.retryDelay);

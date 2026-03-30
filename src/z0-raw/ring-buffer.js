@@ -1,7 +1,17 @@
 /**
- * Z0 Ring Buffer — 심볼별 고정 크기 순환 버퍼
- * trade: 최근 10,000건, depth: 최신 1건, kline: 타임프레임별 100건
- * derivatives: 최근 100건, markPrice: 최신 1건
+ * @module Ring Buffer
+ * @description 심볼별 고정 크기 순환 버퍼(Circular Buffer)를 관리하여 실시간 시장 데이터 스냅샷을 제공한다.
+ *
+ * ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+ * │ WebSocket    │ ───→ │ Ring Buffer  │ ───→ │ Rule Engine  │
+ * │ (Z0-Raw)     │      │ (Memory)     │      │ (Z3-Exec)    │
+ * └──────────────┘      └──────────────┘      └──────────────┘
+ *                              ↑
+ *                       최신 N개 데이터 보관
+ *                       (Trade, Depth, Kline)
+ *
+ * @zone z0-raw
+ * @dependencies None (In-memory)
  */
 
 class CircularBuffer {

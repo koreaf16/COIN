@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Candle1sChart } from '@/components/candle-1s-chart';
+import { StructureBadges } from '@/components/structure-badges';
 
 /** 가격 표시: 가격대에 맞는 소수점 자릿수 자동 결정 */
 const fmtPrice = (price?: number) => {
@@ -116,10 +117,13 @@ export default function PositionsPage() {
                 <tr key={p.id} className={`border-b border-surface-container-high/10 hover:bg-surface transition-colors cursor-pointer ${isSelected ? 'bg-primary/5' : ''}`}
                     onClick={() => handleSymbolClick(p)}>
                   <td className="p-3 font-bold text-primary hover:underline">
-                    <span className="flex items-center gap-1">
-                      {p.symbol}
-                      <span className={`material-symbols-outlined text-sm transition-transform ${isSelected ? 'rotate-180' : ''}`}>expand_more</span>
-                    </span>
+                    <div className="space-y-1">
+                      <span className="flex items-center gap-1">
+                        {p.symbol}
+                        <span className={`material-symbols-outlined text-sm transition-transform ${isSelected ? 'rotate-180' : ''}`}>expand_more</span>
+                      </span>
+                      <StructureBadges structure={p.structure} compact />
+                    </div>
                   </td>
                   <td className="p-3">
                     <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${

@@ -6,11 +6,12 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "kill-ports": "kill-port 3000 2000 2001 2002 --silent",
+    "kill-ports": "kill-port 2000 2001 2002 --silent",
     "dev": "npm run kill-ports && concurrently --names \"SERVER,DASHBOARD,LLM\" --prefix \"[{name}]\" --prefix-colors \"cyan,blue,yellow\" \"node --watch src/index.js\" \"npm run dashboard\" \"npm run llm\"",
     "dashboard": "cd dashboard && npm run dev",
     "llm": "cd python-llm && python -m uvicorn main:app --host 0.0.0.0 --port 2002 --reload",
     "resnapshot": "node src/tools/resnapshot.js",
+    "test:trade-flow": "node scripts/test/regression-trade-flow.mjs && python python-llm/smoke_validator.py && node scripts/test/event-monitor-smoke.mjs && node scripts/test/sample-plan-smoke.mjs",
     "validate": "node src/validation/m71-trade-validation.js",
     "validate:params": "node src/validation/m72-parameter-optimizer.js",
     "validate:matching": "node src/validation/m73-matching-effectiveness.js",

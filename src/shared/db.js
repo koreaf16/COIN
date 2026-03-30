@@ -1,3 +1,16 @@
+/**
+ * @module 데이터베이스 관리자
+ * @description Oracle DB 커넥션 풀을 관리하고 타임존(UTC) 설정을 강제한다.
+ *
+ * ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+ * │ Config       │ ──→ │ DB Pool      │ ──→ │ Oracle DB    │
+ * │ (Credentials)│     │ Manager      │     │ (Z4 Results) │
+ * └──────────────┘     └──────────────┘     └──────────────┘
+ *
+ * @zone shared
+ * @dependencies config.js, oracledb, logger.js
+ */
+import { logger } from "./logger.js";
 import oracledb from 'oracledb';
 import { config } from './config.js';
 
@@ -16,34 +29,44 @@ oracledb.fetchAsString = [oracledb.CLOB];
  * 핵심: getPool().getConnection() 대신 getConnection()을 사용할 것
  */
 export async function initDb() {
-  if (config.oracle.instantClientPath) {
-    oracledb.initOracleClient({ libDir: config.oracle.instantClientPath });
+  try {
+    if (config.oracle.instantClientPath) {
+      oracledb.initOracleClient({ libDir: config.oracle.instantClientPath });
+    }
+
+    pool = await oracledb.createPool({
+      user: config.oracle.user,
+      password: config.oracle.password,
+      connectString: config.oracle.connectString,
+      poolMin: 2,
+      poolMax: 10,
+      poolIncrement: 1,
+    });
+
+    // 연결 테스트 + 타임존 확인
+    const conn = await getConnection();
+    const result = await conn.execute("SELECT SYSTIMESTAMP, SESSIONTIMEZONE FROM DUAL");
+    const [sysTs, sessionTz] = result.rows[0];
+    await conn.close();
+    logger.info(`[DB] Oracle 연결 성공 (session TZ: ${sessionTz})`);
+    return pool;
+  } catch (err) {
+    logger.error(`[DB] 초기화 실패: ${err.message}`);
+    throw err;
   }
-
-  pool = await oracledb.createPool({
-    user: config.oracle.user,
-    password: config.oracle.password,
-    connectString: config.oracle.connectString,
-    poolMin: 2,
-    poolMax: 10,
-    poolIncrement: 1,
-  });
-
-  // 연결 테스트 + 타임존 확인
-  const conn = await getConnection();
-  const result = await conn.execute("SELECT SYSTIMESTAMP, SESSIONTIMEZONE FROM DUAL");
-  const [sysTs, sessionTz] = result.rows[0];
-  await conn.close();
-  console.log(`[DB] Oracle 연결 성공 (session TZ: ${sessionTz})`);
-  return pool;
 }
 
 /** 풀에서 UTC 설정된 커넥션 반환 — 모든 DB 접근은 이것을 사용 */
 export async function getConnection() {
-  if (!pool) throw new Error('DB pool not initialized');
-  const conn = await pool.getConnection();
-  await conn.execute("ALTER SESSION SET TIME_ZONE = 'UTC'");
-  return conn;
+  try {
+    if (!pool) throw new Error('DB pool not initialized');
+    const conn = await pool.getConnection();
+    await conn.execute("ALTER SESSION SET TIME_ZONE = 'UTC'");
+    return conn;
+  } catch (err) {
+    logger.error(`[DB] 커넥션 획득 실패: ${err.message}`);
+    throw err;
+  }
 }
 
 /** 하위 호환: 기존 getPool().getConnection() 패턴을 위한 래퍼 */
@@ -52,17 +75,27 @@ export function getPool() {
   // pool 객체를 래핑하여 getConnection()에서 자동 UTC 설정
   return {
     async getConnection() {
-      const conn = await pool.getConnection();
-      await conn.execute("ALTER SESSION SET TIME_ZONE = 'UTC'");
-      return conn;
+      try {
+        const conn = await pool.getConnection();
+        await conn.execute("ALTER SESSION SET TIME_ZONE = 'UTC'");
+        return conn;
+      } catch (err) {
+        logger.error(`[DB] 풀 커넥션 획득 실패: ${err.message}`);
+        throw err;
+      }
     },
   };
 }
 
 export async function closeDb() {
-  if (pool) {
-    await pool.close(0);
-    pool = null;
-    console.log('[DB] Oracle pool closed');
+  try {
+    if (pool) {
+      await pool.close(0);
+      pool = null;
+      logger.info('[DB] Oracle pool closed');
+    }
+  } catch (err) {
+    logger.error(`[DB] 풀 종료 실패: ${err.message}`);
+    throw err;
   }
 }

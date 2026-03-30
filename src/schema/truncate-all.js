@@ -1,3 +1,9 @@
+/**
+ * +---------------------------------------------------------+
+ * | MODULE: truncate-all.js                                  |
+ * +---------------------------------------------------------+
+ */
+import { logger } from "../shared/logger.js";
 /** 모든 z0~z4 테이블 데이터 초기화 (테이블 구조 유지) */
 import oracledb from 'oracledb';
 import { config } from '../shared/config.js';
@@ -20,11 +26,11 @@ const tables = [
 for (const t of tables) {
   try {
     await conn.execute(`TRUNCATE TABLE ${t}`);
-    console.log(`TRUNCATED ${t}`);
+    logger.info(`TRUNCATED ${t}`);
   } catch (err) {
-    console.warn(`SKIP ${t}: ${err.message.split('\n')[0]}`);
+    logger.warn(`SKIP ${t}: ${err.message.split('\n')[0]}`);
   }
 }
 
-console.log('\nAll data cleared. Fresh start with UTC timestamps.');
+logger.info('\nAll data cleared. Fresh start with UTC timestamps.');
 await conn.close();

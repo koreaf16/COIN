@@ -38,6 +38,7 @@ export default function BacktestingPage() {
   const wins = trades.filter(t => (t.pnl_amount || 0) > 0).length;
   const winRate = totalTrades > 0 ? ((wins / totalTrades) * 100).toFixed(1) : '--';
   const totalPnl = trades.reduce((s, t) => s + (t.pnl_amount || 0), 0);
+  const totalFees = trades.reduce((s, t) => s + (t.fee_amount || 0), 0);
 
   // Use API-sourced avg_win_pct / avg_loss_pct when available, fall back to client-side calc
   const latestPerf = performance.length > 0 ? performance[0] : null;
@@ -66,7 +67,8 @@ export default function BacktestingPage() {
         <div className="col-span-8 grid grid-cols-3 gap-4">
           <MetricCard label="총 거래" value={`${totalTrades}`} />
           <MetricCard label="승률" value={`${winRate}%`} color={Number(winRate) > 50 ? 'text-success' : 'text-error'} />
-          <MetricCard label="총 손익" value={`$${totalPnl.toFixed(2)}`} color={totalPnl >= 0 ? 'text-success' : 'text-error'} />
+          <MetricCard label="총 손익 (Net)" value={`$${totalPnl.toFixed(2)}`} color={totalPnl >= 0 ? 'text-success' : 'text-error'} />
+          <MetricCard label="총 수수료" value={`$${totalFees.toFixed(2)}`} color="text-outline" />
           <MetricCard label="평균 승/패" value={`${avgWinPct}% / ${avgLossPct}%`} />
           <MetricCard label="샤프 비율" value={sharpeRatio} color={Number(sharpeRatio) >= 1 ? 'text-success' : Number(sharpeRatio) > 0 ? 'text-on-surface' : 'text-error'} />
           <MetricCard label="수익 팩터" value={profitFactor} color={Number(profitFactor) >= 1 ? 'text-success' : 'text-error'} />
@@ -123,13 +125,14 @@ export default function BacktestingPage() {
                 <th className="p-3 text-right">진입가</th>
                 <th className="p-3 text-right">청산가</th>
                 <th className="p-3 text-right">투입금</th>
-                <th className="p-3 text-right">손익</th>
+                <th className="p-3 text-right">수수료</th>
+                <th className="p-3 text-right">손익(Net)</th>
                 <th className="p-3">사유</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {trades.length === 0 ? (
-                <tr><td colSpan={8} className="p-6 text-center text-outline">거래 내역이 없습니다.</td></tr>
+                <tr><td colSpan={9} className="p-6 text-center text-outline">거래 내역이 없습니다.</td></tr>
               ) : trades.slice(0, 20).map((t, i) => (
                 <tr
                   key={i}
@@ -144,8 +147,11 @@ export default function BacktestingPage() {
                   <td className="p-3 text-right font-mono text-outline text-xs">
                     {t.notional != null ? `$${Number(t.notional).toFixed(0)}` : '--'}
                   </td>
+                  <td className="p-3 text-right font-mono text-outline text-xs">
+                    {t.fee_amount != null ? `$${t.fee_amount.toFixed(2)}` : '--'}
+                  </td>
                   <td className={`p-3 text-right font-bold ${(t.pnl_amount || 0) >= 0 ? 'text-success' : 'text-error'}`}>
-                    {t.pnl_amount != null ? `${t.pnl_amount >= 0 ? '+' : ''}$${Math.abs(t.pnl_amount).toFixed(2)}` : '--'}
+                    {t.pnl_amount != null ? `${t.pnl_amount >= 0 ? '+' : '-'}$${Math.abs(t.pnl_amount).toFixed(2)}` : '--'}
                   </td>
                   <td className="p-3">
                     <div className="flex items-center gap-1">

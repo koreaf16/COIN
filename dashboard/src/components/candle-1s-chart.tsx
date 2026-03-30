@@ -28,8 +28,6 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const entryLineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const targetLineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const stopLineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const exitLineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<any> | null>(null);
   const prevCountRef = useRef(0);
@@ -99,8 +97,6 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
     };
 
     entryLineSeriesRef.current = makeLineSeries('#2962FF', '진입');
-    targetLineSeriesRef.current = makeLineSeries('#00A650', '익절');
-    stopLineSeriesRef.current = makeLineSeries('#9f403d', '손절');
     exitLineSeriesRef.current = makeLineSeries('#FF6D00', '청산');
 
     // 마커 플러그인 생성 (1회 — 이후 setMarkers로 업데이트)
@@ -128,8 +124,6 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
       candleRef.current = null;
       volumeRef.current = null;
       entryLineSeriesRef.current = null;
-      targetLineSeriesRef.current = null;
-      stopLineSeriesRef.current = null;
       exitLineSeriesRef.current = null;
       markersPluginRef.current = null;
     };
@@ -142,8 +136,6 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
     linesCreatedRef.current = false;
 
     entryLineSeriesRef.current?.setData([]);
-    targetLineSeriesRef.current?.setData([]);
-    stopLineSeriesRef.current?.setData([]);
     exitLineSeriesRef.current?.setData([]);
     markersPluginRef.current?.setMarkers([]);
 
@@ -200,18 +192,6 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
                 { time: lastTime, value: entryPrice },
               ]);
             }
-            if (targetPrice && targetLineSeriesRef.current) {
-              targetLineSeriesRef.current.setData([
-                { time: firstTime, value: targetPrice },
-                { time: lastTime, value: targetPrice },
-              ]);
-            }
-            if (safetyStop && stopLineSeriesRef.current) {
-              stopLineSeriesRef.current.setData([
-                { time: firstTime, value: safetyStop },
-                { time: lastTime, value: safetyStop },
-              ]);
-            }
             if (exitPrice && exitLineSeriesRef.current) {
               exitLineSeriesRef.current.setData([
                 { time: firstTime, value: exitPrice },
@@ -224,7 +204,7 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
           const markers: any[] = [];
           const isLong = direction === 'LONG';
 
-          // 진입 마커
+          // 진입 마커 — 진입 캔들이 데이터 범위 안에 있을 때만 표시
           if (entryTime) {
             const entryTimeET = entryTime + tzOffset;
             let markerTime = candles[0].time;
@@ -234,21 +214,25 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
               if (diff < minDiff) { minDiff = diff; markerTime = c.time; }
             }
 
-            const etStr = new Date(entryTime * 1000).toLocaleString('en-US', {
-              timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-            });
+            // 가장 가까운 캔들이 5초 이내일 때만 마커 표시
+            // (진입 시점이 데이터 범위 밖이면 엉뚱한 위치에 찍히므로 스킵)
+            if (minDiff <= 5) {
+              const etStr = new Date(entryTime * 1000).toLocaleString('en-US', {
+                timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+              });
 
-            markers.push({
-              time: markerTime,
-              position: isLong ? 'belowBar' : 'aboveBar',
-              color: '#2962FF',
-              shape: isLong ? 'arrowUp' : 'arrowDown',
-              text: `▶ 진입 $${entryPrice || ''} ${etStr}`,
-              size: 2,
-            });
+              markers.push({
+                time: markerTime,
+                position: isLong ? 'belowBar' : 'aboveBar',
+                color: '#2962FF',
+                shape: isLong ? 'arrowUp' : 'arrowDown',
+                text: `▶ 진입 $${entryPrice || ''} ${etStr}`,
+                size: 2,
+              });
+            }
           }
 
-          // 청산 마커
+          // 청산 마커 — 청산 캔들이 데이터 범위 안에 있을 때만 표시
           if (exitTime) {
             const exitTimeET = exitTime + tzOffset;
             let markerTime = candles[candles.length - 1].time;
@@ -258,18 +242,20 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
               if (diff < minDiff) { minDiff = diff; markerTime = c.time; }
             }
 
-            const etStr = new Date(exitTime * 1000).toLocaleString('en-US', {
-              timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-            });
+            if (minDiff <= 5) {
+              const etStr = new Date(exitTime * 1000).toLocaleString('en-US', {
+                timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+              });
 
-            markers.push({
-              time: markerTime,
-              position: isLong ? 'aboveBar' : 'belowBar',
-              color: '#FF6D00',
-              shape: isLong ? 'arrowDown' : 'arrowUp',
-              text: `■ 청산 $${exitPrice || ''} ${etStr}`,
-              size: 2,
-            });
+              markers.push({
+                time: markerTime,
+                position: isLong ? 'aboveBar' : 'belowBar',
+                color: '#FF6D00',
+                shape: isLong ? 'arrowDown' : 'arrowUp',
+                text: `■ 청산 $${exitPrice || ''} ${etStr}`,
+                size: 2,
+              });
+            }
           }
 
           // 시간순 정렬 후 마커 세팅
@@ -292,17 +278,16 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
             chartRef.current?.timeScale().scrollToRealTime();
           }
         } else {
-          // 증분 업데이트
-          const startIdx = Math.max(0, candles.length - 3);
-          for (let i = startIdx; i < candles.length; i++) {
-            candleRef.current?.update(candles[i]);
-            volumeRef.current?.update(volumes[i]);
-          }
-          // 라인 끝점 연장
-          if (entryPrice) entryLineSeriesRef.current?.update({ time: lastTime, value: entryPrice });
-          if (targetPrice) targetLineSeriesRef.current?.update({ time: lastTime, value: targetPrice });
-          if (safetyStop) stopLineSeriesRef.current?.update({ time: lastTime, value: safetyStop });
-          if (exitPrice) exitLineSeriesRef.current?.update({ time: lastTime, value: exitPrice });
+          // 증분 업데이트 — 마지막 캔들만 업데이트 (이전 캔들 update 시 시간 역전 에러 방지)
+          try {
+            const last = candles[candles.length - 1];
+            const lastVol = volumes[volumes.length - 1];
+            if (last) candleRef.current?.update(last);
+            if (lastVol) volumeRef.current?.update(lastVol);
+            // 라인 끝점 연장
+            if (entryPrice) entryLineSeriesRef.current?.update({ time: lastTime, value: entryPrice });
+            if (exitPrice) exitLineSeriesRef.current?.update({ time: lastTime, value: exitPrice });
+          } catch { /* 시간 역전 무시 */ }
         }
 
         prevCountRef.current = candles.length;
@@ -319,7 +304,34 @@ export function Candle1sChart({ symbol, entryPrice, entryTime, exitPrice, exitTi
       cancelled = true;
       clearInterval(timer);
     };
-  }, [symbol, entryPrice, entryTime, exitPrice, exitTime, targetPrice, safetyStop, direction]);
+  }, [symbol, entryPrice, entryTime, exitPrice, exitTime, direction]);
 
-  return <div ref={containerRef} className="w-full h-full" />;
+  /** 가격 표시: 가격대에 맞는 소수점 자릿수 자동 결정 */
+  const fmtPrice = (price: number) => {
+    if (price >= 1000) return price.toFixed(2);
+    if (price >= 1)    return price.toFixed(4);
+    if (price >= 0.01) return price.toFixed(5);
+    return price.toFixed(6);
+  };
+
+  return (
+    <div className="relative w-full h-full">
+      <div ref={containerRef} className="w-full h-full" />
+      {/* 익절 / 손절 오버레이 */}
+      {(targetPrice || safetyStop) && (
+        <div className="absolute top-2 left-2 flex gap-3 text-[11px] font-mono z-10 pointer-events-none">
+          {targetPrice != null && (
+            <span className="bg-white/90 border border-[#00A650]/30 text-[#00A650] px-2 py-0.5 rounded font-bold">
+              익절 ${fmtPrice(targetPrice)}
+            </span>
+          )}
+          {safetyStop != null && (
+            <span className="bg-white/90 border border-[#9f403d]/30 text-[#9f403d] px-2 py-0.5 rounded font-bold">
+              손절 ${fmtPrice(safetyStop)}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

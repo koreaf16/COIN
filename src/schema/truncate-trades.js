@@ -1,3 +1,9 @@
+/**
+ * +---------------------------------------------------------+
+ * | MODULE: truncate-trades.js                               |
+ * +---------------------------------------------------------+
+ */
+import { logger } from "../shared/logger.js";
 /** 거래 관련 테이블만 초기화 (z2 플랜 + z3 검증 + z4 거래/성과) */
 import oracledb from 'oracledb';
 import { config } from '../shared/config.js';
@@ -20,11 +26,11 @@ const tables = [
 for (const t of tables) {
   try {
     await conn.execute(`TRUNCATE TABLE ${t}`);
-    console.log(`TRUNCATED ${t}`);
+    logger.info(`TRUNCATED ${t}`);
   } catch (err) {
-    console.warn(`SKIP ${t}: ${err.message.split('\n')[0]}`);
+    logger.warn(`SKIP ${t}: ${err.message.split('\n')[0]}`);
   }
 }
 
-console.log('\nTrade data cleared (plans + executions + positions + performance).');
+logger.info('\nTrade data cleared (plans + executions + positions + performance).');
 await conn.close();

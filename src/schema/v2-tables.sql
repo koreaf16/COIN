@@ -114,7 +114,8 @@ CREATE TABLE z1_market_states (
     macro_regime        VARCHAR2(15),         -- 'risk_on','neutral','risk_off'
     sentiment_score     NUMBER,               -- -1.0 ~ +1.0
     exchange_netflow    NUMBER DEFAULT 0,     -- Phase 3에서 채움
-    liq_asymmetry       NUMBER,               -- 상방/하방 청산비율 (-1~+1)
+    liq_asymmetry           NUMBER,           -- 상방/하방 청산비율 (-1~+1)
+    volatility_acceleration NUMBER DEFAULT 1.0, -- 변동성 가속도 (ATR 변화율)
     next_1h_return      NUMBER,               -- 사후 기록 (백테스트용)
     next_4h_return      NUMBER,
     next_24h_return     NUMBER,
@@ -166,7 +167,7 @@ CREATE TABLE z2_llm_analysis (
     ts              TIMESTAMP     NOT NULL,
     analysis_type   VARCHAR2(20)  NOT NULL,   -- 'sentiment','briefing','scenario','event'
     llm_source      VARCHAR2(10)  DEFAULT 'local', -- 'local','cloud'
-    result          JSON          NOT NULL,    -- LLM 출력 전체
+    result          VARCHAR2(32767) NOT NULL,  -- LLM 출력 전체 (Oracle VARCHAR2 max)
     confidence      NUMBER,
     embedding       VECTOR(1024, FLOAT64),    -- 브리핑 텍스트 임베딩 (BGE-M3)
     latency_ms      NUMBER,                   -- LLM 호출 지연
@@ -231,6 +232,10 @@ CREATE TABLE z4_positions (
     symbol           VARCHAR2(20)  NOT NULL,
     direction        VARCHAR2(5)   NOT NULL,  -- 'LONG','SHORT'
     entry_price      NUMBER        NOT NULL,
+    qty              NUMBER,                  -- 진입 수량
+    target_price     NUMBER,                  -- 목표가
+    safety_stop      NUMBER,                  -- 안전 손절가
+    time_stop_min    NUMBER        DEFAULT 480, -- 시간 손절 (분, 기본 8시간)
     entry_time       TIMESTAMP     NOT NULL,
     entry_reasoning  JSON,                    -- 진입 시 근거
     exit_price       NUMBER,
@@ -240,8 +245,10 @@ CREATE TABLE z4_positions (
     pnl_pct          NUMBER,
     pnl_amount       NUMBER,                  -- USDT 기준 손익
     plan_id          NUMBER,                  -- z2_execution_plan 참조
-    status           VARCHAR2(10)  DEFAULT 'OPEN',
-                                              -- 'OPEN','CLOSED'
+    status           VARCHAR2(20)  DEFAULT 'OPEN',
+                                              -- 'OPEN','CLOSED','ERROR','MANUAL_REVIEW'
+    candle_data      CLOB,                    -- 거래 1초봉 데이터 (JSON)
+    candle_post_exit NUMBER(1)     DEFAULT 0, -- 후행 캡처 완료 플래그
     CONSTRAINT pk_z4_pos PRIMARY KEY (id),
     CONSTRAINT chk_z4_pos_dir CHECK (direction IN ('LONG', 'SHORT'))
 );

@@ -1,19 +1,23 @@
 /**
- * Z0 Futures WebSocket Connector — Binance USDT-M Futures Combined Stream
- * 재연결 로직 (지수 백오프, 최대 60초)
+ * @module Binance Futures WebSocket Connector
+ * @description 바이낸스 USDT-M 선물의 실시간 체결, 캔들, 호가창, 마크가격, 청산 데이터를 수집한다.
  *
- * 스트림:
- *   - aggTrade: 체결 데이터 (CVD 계산용)
- *   - kline: 1m/5m/1h/4h/1d 멀티 타임프레임
- *   - depth20@100ms: 호가창 (Ring Buffer만)
- *   - markPrice@1s: 마크가격 + 펀딩비 예측
- *   - forceOrder: 실시간 청산
+ * ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+ * │ Binance      │ ───→ │ Futures Ws   │ ───→ │ Dispatcher   │
+ * │ WS API       │      │ Connector    │      │ (Z1/Z3 전송)  │
+ * └──────────────┘      └──────────────┘      └──────────────┘
+ *                              │
+ *                       ┌──────┴──────┐
+ *                       │ Ring Buffer  │
+ *                       │ (Z0-Internal)│
+ *                       └──────────────┘
  *
- * Binance 제한: 하나의 connection에 최대 1024 streams
- * 30심볼 × 9스트림 = 270 스트림 → 1 connection으로 충분
+ * @zone z0-raw
+ * @dependencies ws, logger.js
  */
 
 import WebSocket from 'ws';
+import { logger } from '../shared/logger.js';
 
 const WS_BASE = 'wss://fstream.binance.com';
 const KLINE_TIMEFRAMES = ['1m', '5m', '1h', '4h', '1d'];
@@ -37,9 +41,13 @@ export class FuturesWsConnector {
   }
 
   async start() {
-    this.running = true;
-    this.attempt = 0;
-    this._connect();
+    try {
+      this.running = true;
+      this.attempt = 0;
+      this._connect();
+    } catch (err) {
+      logger.error(`[Z0-WS] Failed to start: ${err.message}`);
+    }
   }
 
   stop() {
@@ -54,7 +62,7 @@ export class FuturesWsConnector {
   updateSymbols(newSymbols) {
     const prev = this.symbols.length;
     this.symbols = newSymbols;
-    console.log(`[Z0-WS] Symbol update: ${prev} → ${newSymbols.length} symbols, reconnecting...`);
+    logger.info(`[Z0-WS] Symbol update: ${prev} → ${newSymbols.length} symbols, reconnecting...`);
     this.stop();
     this.running = true;
     this.attempt = 0;
@@ -94,7 +102,7 @@ export class FuturesWsConnector {
       this.attempt = 0;
       this.retryDelay = 1000;
       this.onStatus('connected', { symbols: this.symbols.length, streams: streams.length });
-      console.log(`[Z0] Futures WS connected (${this.symbols.length} symbols, ${streams.length} streams)`);
+      logger.info(`[Z0] Futures WS connected (${this.symbols.length} symbols, ${streams.length} streams)`);
     });
 
     ws.on('message', (raw) => {
@@ -113,7 +121,7 @@ export class FuturesWsConnector {
     });
 
     ws.on('error', (err) => {
-      console.error(`[Z0] Futures WS error: ${err.code || ''} ${err.message}`);
+      logger.error(`[Z0] Futures WS error: ${err.code || ''} ${err.message}`);
       this.onStatus('error', { message: err.message });
     });
 
@@ -226,12 +234,12 @@ export class FuturesWsConnector {
   _retry() {
     this.attempt++;
     if (this.attempt > this.maxRetries) {
-      console.error('[Z0] Max retries exceeded. Giving up.');
+      logger.error('[Z0] Max retries exceeded. Giving up.');
       this.onStatus('failed', { attempts: this.attempt });
       return;
     }
 
-    console.log(`[Z0] Reconnecting in ${this.retryDelay / 1000}s (attempt ${this.attempt})...`);
+    logger.info(`[Z0] Reconnecting in ${this.retryDelay / 1000}s (attempt ${this.attempt})...`);
     setTimeout(() => this._connect(), this.retryDelay);
     this.retryDelay = Math.min(this.retryDelay * 2, 60000);
   }

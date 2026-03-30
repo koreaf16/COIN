@@ -13,6 +13,10 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     proxyTimeout: 180000,
+    allowedDevOrigins: ['localhost:2000', '192.168.0.60:2000'],
+    serverActions: {
+      allowedOrigins: ['localhost:2000', '192.168.0.60:2000'],
+    },
   },
 };
 

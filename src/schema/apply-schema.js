@@ -1,4 +1,10 @@
 /**
+ * +---------------------------------------------------------+
+ * | MODULE: apply-schema.js                                  |
+ * +---------------------------------------------------------+
+ */
+import { logger } from "../shared/logger.js";
+/**
  * v2 스키마 적용 스크립트 — Oracle에 새 테이블 생성
  * 실행: node src/schema/apply-schema.js
  */
@@ -21,10 +27,10 @@ async function run() {
     connectString: config.oracle.connectString,
   });
 
-  console.log('[Schema] Connected to Oracle');
+  logger.info('[Schema] Connected to Oracle');
 
   // 1. 기존 TB_* 테이블 DROP
-  console.log('[Schema] Dropping old TB_* tables...');
+  logger.info('[Schema] Dropping old TB_* tables...');
   const oldTables = await conn.execute(
     "SELECT table_name FROM user_tables WHERE table_name LIKE 'TB_%' ORDER BY table_name"
   );
@@ -32,14 +38,14 @@ async function run() {
     const tableName = row[0];
     try {
       await conn.execute(`DROP TABLE ${tableName} CASCADE CONSTRAINTS PURGE`);
-      console.log(`  DROP ${tableName}`);
+      logger.info(`  DROP ${tableName}`);
     } catch (err) {
-      console.warn(`  DROP ${tableName} failed: ${err.message}`);
+      logger.warn(`  DROP ${tableName} failed: ${err.message}`);
     }
   }
 
   // 2. 기존 z*_ 테이블 DROP (재실행 대비)
-  console.log('[Schema] Dropping existing z*_ tables...');
+  logger.info('[Schema] Dropping existing z*_ tables...');
   const zTables = await conn.execute(
     "SELECT table_name FROM user_tables WHERE table_name LIKE 'Z%\\_%' ESCAPE '\\' OR table_name = 'SYS_CONFIG' ORDER BY table_name"
   );
@@ -47,14 +53,14 @@ async function run() {
     const tableName = row[0];
     try {
       await conn.execute(`DROP TABLE ${tableName} CASCADE CONSTRAINTS PURGE`);
-      console.log(`  DROP ${tableName}`);
+      logger.info(`  DROP ${tableName}`);
     } catch (err) {
-      console.warn(`  DROP ${tableName} failed: ${err.message}`);
+      logger.warn(`  DROP ${tableName} failed: ${err.message}`);
     }
   }
 
   // 3. 기존 트리거/프로시저/함수 DROP
-  console.log('[Schema] Dropping old triggers/procedures...');
+  logger.info('[Schema] Dropping old triggers/procedures...');
   for (const type of ['TRIGGER', 'PROCEDURE', 'FUNCTION']) {
     const objs = await conn.execute(
       `SELECT object_name FROM user_objects WHERE object_type = :t AND (object_name LIKE 'TRG_%' OR object_name LIKE 'SP_%' OR object_name LIKE 'FN_%')`,
@@ -63,13 +69,13 @@ async function run() {
     for (const row of (objs.rows || [])) {
       try {
         await conn.execute(`DROP ${type} ${row[0]}`);
-        console.log(`  DROP ${type} ${row[0]}`);
+        logger.info(`  DROP ${type} ${row[0]}`);
       } catch (_) {}
     }
   }
 
   // 4. v2-tables.sql에서 DDL 문 실행
-  console.log('[Schema] Creating v2 tables...');
+  logger.info('[Schema] Creating v2 tables...');
   const sqlFile = readFileSync(resolve(__dirname, 'v2-tables.sql'), 'utf-8');
   const statements = parseSqlStatements(sqlFile);
 
@@ -78,17 +84,17 @@ async function run() {
       await conn.execute(stmt);
       // 테이블 생성문에서 테이블 이름 추출
       const match = stmt.match(/CREATE\s+(?:TABLE|INDEX|VECTOR\s+INDEX)\s+(\S+)/i);
-      if (match) console.log(`  CREATE ${match[1]}`);
-      else if (stmt.trim().startsWith('INSERT')) console.log(`  INSERT config`);
+      if (match) logger.info(`  CREATE ${match[1]}`);
+      else if (stmt.trim().startsWith('INSERT')) logger.info(`  INSERT config`);
     } catch (err) {
-      console.error(`  ERROR: ${err.message.split('\n')[0]}`);
-      console.error(`  SQL: ${stmt.substring(0, 80)}...`);
+      logger.error(`  ERROR: ${err.message.split('\n')[0]}`);
+      logger.error(`  SQL: ${stmt.substring(0, 80)}...`);
     }
   }
   await conn.execute('COMMIT');
 
   // 5. v2-plsql.sql에서 PL/SQL 블록 실행
-  console.log('[Schema] Creating PL/SQL triggers/procedures...');
+  logger.info('[Schema] Creating PL/SQL triggers/procedures...');
   const plsqlFile = readFileSync(resolve(__dirname, 'v2-plsql.sql'), 'utf-8');
   const plsqlBlocks = parsePlsqlBlocks(plsqlFile);
 
@@ -96,25 +102,25 @@ async function run() {
     try {
       await conn.execute(block);
       const match = block.match(/(?:TRIGGER|PROCEDURE|FUNCTION)\s+(\S+)/i);
-      if (match) console.log(`  CREATE ${match[1]}`);
+      if (match) logger.info(`  CREATE ${match[1]}`);
     } catch (err) {
-      console.error(`  PL/SQL ERROR: ${err.message.split('\n')[0]}`);
-      console.error(`  Block: ${block.substring(0, 80)}...`);
+      logger.error(`  PL/SQL ERROR: ${err.message.split('\n')[0]}`);
+      logger.error(`  Block: ${block.substring(0, 80)}...`);
     }
   }
 
   // 6. 검증
-  console.log('\n[Schema] Verification:');
+  logger.info('\n[Schema] Verification:');
   const tables = await conn.execute(
     "SELECT table_name FROM user_tables WHERE table_name LIKE 'Z%\\_%' ESCAPE '\\' OR table_name = 'SYS_CONFIG' ORDER BY table_name"
   );
-  console.log(`  Tables created: ${tables.rows.length}`);
+  logger.info(`  Tables created: ${tables.rows.length}`);
   for (const row of tables.rows) {
-    console.log(`    ${row[0]}`);
+    logger.info(`    ${row[0]}`);
   }
 
   await conn.close();
-  console.log('\n[Schema] Done!');
+  logger.info('\n[Schema] Done!');
 }
 
 function parseSqlStatements(sql) {
@@ -141,6 +147,6 @@ function parsePlsqlBlocks(sql) {
 }
 
 run().catch(err => {
-  console.error('Fatal:', err);
+  logger.error('Fatal:', err);
   process.exit(1);
 });

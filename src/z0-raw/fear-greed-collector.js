@@ -1,14 +1,22 @@
 /**
- * Z0 Fear & Greed Index — Alternative.me (완전 무료, 키 불필요)
+ * @module 공포 탐욕 지수 수집기
+ * @description Alternative.me API를 통해 암호화폐 시장의 공포 탐욕 지수(Fear & Greed Index)를 수집한다.
  *
- * 0~100: 극단적 공포(0~24) → 공포(25~49) → 중립(50) → 탐욕(51~74) → 극단적 탐욕(75~100)
- * 역발상 시그널: 극단적 공포 + 숏과적 = 롱 기회 / 극단적 탐욕 + 롱과적 = 숏 기회
- * 주기: 10분 (API 갱신은 일 1회이지만, 빠른 감지 위해)
+ * ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+ * │ Alternative  │ ──→ │ Fear-Greed   │ ──→ │ Oracle DB    │
+ * │ .me API      │     │ Collector    │     │ (z0_fng)     │
+ * └──────────────┘     └──────────────┘     └──────────────┘
+ *
+ * @zone z0-raw
+ * @dependencies db.js, query-loader.js, logger.js
  */
 
+import { logger } from "../shared/logger.js";
 import { getPool } from '../shared/db.js';
+import { loadQueries } from '../shared/query-loader.js';
 
 const API_URL = 'https://api.alternative.me/fng/?limit=1&format=json';
+const queries = loadQueries('z0-raw/fear-greed-collector');
 
 export class FearGreedCollector {
   constructor(opts = {}) {
@@ -21,7 +29,7 @@ export class FearGreedCollector {
   start() {
     this._fetch();
     this._timer = setInterval(() => this._fetch(), this.intervalMs);
-    console.log(`[Z0-FnG] Fear & Greed started (interval=${this.intervalMs / 60000}min)`);
+    logger.info(`[Z0-FnG] Fear & Greed started (${this.intervalMs / 60000}min)`);
   }
 
   stop() {
@@ -47,25 +55,23 @@ export class FearGreedCollector {
       };
       this.stats.fetched++;
 
-      // DB 저장
-      const conn = await getPool().getConnection();
-      try {
-        await conn.execute(
-          `MERGE INTO z0_fear_greed f
-           USING (SELECT TRUNC(SYSTIMESTAMP, 'HH') AS ts FROM dual) s
-           ON (f.ts = s.ts)
-           WHEN NOT MATCHED THEN INSERT (ts, value, classification) VALUES (SYSTIMESTAMP, :val, :cls)
-           WHEN MATCHED THEN UPDATE SET value = :val, classification = :cls`,
-          { val: this.current.value, cls: this.current.classification },
-          { autoCommit: true }
-        );
-      } finally {
-        await conn.close();
-      }
-
-      console.log(`[Z0-FnG] Fear & Greed: ${this.current.value} (${this.current.classification})`);
+      await this._saveToDb();
+      logger.info(`[Z0-FnG] Fear & Greed: ${this.current.value} (${this.current.classification})`);
     } catch (err) {
       this.stats.errors++;
+      logger.error(`[Z0-FnG] Fetch error: ${err.message}`);
+    }
+  }
+
+  async _saveToDb() {
+    const conn = await getPool().getConnection();
+    try {
+      await conn.execute(queries.mergeFearGreed, {
+        val: this.current.value,
+        cls: this.current.classification
+      }, { autoCommit: true });
+    } finally {
+      await conn.close();
     }
   }
 }

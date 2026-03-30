@@ -1,50 +1,86 @@
 /**
- * COIN v2 — 5-Zone Architecture Main Orchestrator
+ * @module 메인 오케스트레이터
+ * @description COIN 시스템의 5개 Zone을 통합 관리하고 실행한다.
  *
  * Z0(Raw) → Z1(Processed) → Z2(Intelligence) → Z3(Execution) → Z4(Results)
- * 타임존: DB=UTC, 표시=ET(America/New_York)
- * Windows에서 process.env.TZ는 작동하지 않으므로 Oracle 세션 UTC + UI에서 ET 변환
+ *
+ * ┌──────────┐     ┌──────────┐     ┌──────────┐
+ * │ Collectors │ ──→ │ Index    │ ──→ │ Executors│
+ * │ (Z0-Z1)    │     │ Orchestr.│     │ (Z3-Z4)  │
+ * └──────────┘     └──────────┘     └──────────┘
+ *                       ↑
+ *                LLM Scheduler (Z2)
+ *
+ * @zone root
+ * @dependencies all zones, shared/db, shared/config, shared/logger
  */
+import { logger } from "./shared/logger.js";
 
 import { spawn } from 'child_process';
 import net from 'net';
+import { fileURLToPath } from 'url';
 import { initDb, closeDb, getPool } from './shared/db.js';
 import { config } from './shared/config.js';
+import { hotReloader } from './shared/hot-reload.js';
 import { ApiServer } from './api/index.js';
+
+const pythonLlmUrl = (() => {
+  try {
+    return new URL(config.llm.pythonUrl);
+  } catch {
+    return new URL('http://localhost:2002');
+  }
+})();
+const pythonLlmPort = Number(pythonLlmUrl.port || '2002');
+const pythonLlmHost = pythonLlmUrl.hostname || '127.0.0.1';
 
 // Python LLM 서버 자동 시작 (포트 충돌 시 스킵 — 재시도 안 함)
 let llmProcess = null;
 function startLLMServer() {
-  const probe = net.createConnection({ port: 2002, host: '127.0.0.1' });
+  const probe = net.createConnection({ port: pythonLlmPort, host: pythonLlmHost });
   probe.on('connect', () => {
     probe.destroy();
-    console.log('[LLM-PY] Port 2002 already active — skipping auto-start');
+    logger.info(`[LLM-PY] Port ${pythonLlmPort} already active — skipping auto-start`);
   });
   probe.on('error', () => {
     // 포트 비어있음 → Python 서버 시작
-    const cwd = new URL('../python-llm', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1');
-    llmProcess = spawn('python', ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', '2002'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    llmProcess.stdout?.on('data', (d) => {
-      const msg = d.toString().trim();
-      if (msg) console.log(`[LLM-PY] ${msg}`);
-    });
-    llmProcess.stderr?.on('data', (d) => {
-      const msg = d.toString().trim();
-      if (msg.includes('10048') || msg.includes('EADDRINUSE')) return; // 포트 충돌 무시
-      if (msg && !msg.includes('INFO:')) console.error(`[LLM-PY] ${msg}`);
-    });
-    llmProcess.on('exit', (code) => {
-      llmProcess = null;
-      // 포트 충돌(code=1,3)이면 재시작 안 함, 그 외만 재시도
-      if (code && code !== 1 && code !== 3) {
-        setTimeout(() => startLLMServer(), 10000);
-      }
-    });
-    console.log('[LLM-PY] Python LLM server starting on port 2002');
+    try {
+      const cwd = fileURLToPath(new URL('../python-llm/', import.meta.url));
+      const isWindows = process.platform === 'win32';
+      const command = isWindows ? 'py' : 'python3';
+      const args = isWindows
+        ? ['-3', '-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', String(pythonLlmPort)]
+        : ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', String(pythonLlmPort)];
+
+      llmProcess = spawn(command, args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      llmProcess.stdout?.on('data', (d) => {
+        const msg = d.toString().trim();
+        if (msg) logger.info(`[LLM-PY] ${msg}`);
+      });
+      llmProcess.stderr?.on('data', (d) => {
+        const msg = d.toString().trim();
+        if (msg.includes('10048') || msg.includes('EADDRINUSE')) return; // 포트 충돌 무시
+        if (msg && !msg.includes('INFO:')) logger.error(`[LLM-PY] ${msg}`);
+      });
+      llmProcess.on('error', (err) => {
+        logger.error(`[LLM-PY] Failed to start Python LLM server: ${err.message}`);
+        llmProcess = null;
+      });
+      llmProcess.on('exit', (code) => {
+        llmProcess = null;
+        // 포트 충돌(code=1,3)이면 재시작 안 함, 그 외만 재시도
+        if (code && code !== 1 && code !== 3) {
+          setTimeout(() => startLLMServer(), 10000);
+        }
+      });
+      logger.info(`[LLM-PY] Python LLM server starting on port ${pythonLlmPort} (${command})`);
+    } catch (err) {
+      logger.error(`[LLM-PY] Failed to launch Python LLM server: ${err.message}`);
+    }
   });
 }
 
@@ -56,18 +92,19 @@ import { FuturesRawWriter } from './z0-raw/futures-raw-writer.js';
 import { MacroCollector } from './z0-raw/macro-collector.js';
 import { NewsCollector } from './z0-raw/news-collector.js';
 import { TiingoCryptoWs } from './z0-raw/tiingo-crypto-ws.js';
-import { OnchainCollector } from './z0-raw/onchain-collector.js';
 import { CoinglassCollector } from './z0-raw/coinglass-collector.js';
 import { EconomicCalendar } from './z0-raw/economic-calendar.js';
 import { FearGreedCollector } from './z0-raw/fear-greed-collector.js';
 import { StablecoinCollector } from './z0-raw/stablecoin-collector.js';
+import { CoinbasePremiumCollector } from './z0-raw/coinbase-premium.js';
+import { bootstrapKlines } from './z0-raw/kline-bootstrap.js';
 
 // Zone 1: Processed
 import { StateVectorBuilder } from './z1-processed/state-vector-builder.js';
 
 // Zone 2: Intelligence
 import { LLMScheduler } from './z2-intel/scheduler.js';
-import { EventMonitor } from './z2-intel/event-monitor.js';
+import { EventMonitor } from './z2-intel/event-monitor-fixed.js';
 
 // Zone 3: Execution
 import { RuleEngine } from './z3-exec/rule-engine.js';
@@ -90,11 +127,11 @@ const rawWriter = new FuturesRawWriter();
 const macroCollector = new MacroCollector();
 const newsCollector = new NewsCollector();
 const tiingoCryptoWs = new TiingoCryptoWs(symbols);
-const onchainCollector = new OnchainCollector();
 const coinglassCollector = new CoinglassCollector(symbols);
 const economicCalendar = new EconomicCalendar();
 const fearGreedCollector = new FearGreedCollector();
 const stablecoinCollector = new StablecoinCollector();
+const coinbasePremium = new CoinbasePremiumCollector();
 const tradeRecorder = new TradeRecorder();
 tradeRecorder.ringBuffer = ringBuffer; // 1초봉 캡처용
 const perfTracker = new PerformanceTracker();
@@ -105,7 +142,7 @@ const wsConnector = new FuturesWsConnector(symbols, {
   onDepth: (d) => { ringBuffer.pushDepth(d.symbol, d); },
   onMarkPrice: (m) => { ringBuffer.pushMarkPrice(m.symbol, m); rawWriter.onMarkPrice(m); },
   onLiquidation: (l) => { rawWriter.onLiquidation(l); },
-  onStatus: (s, d) => { console.log(`[WS] ${s}`, d || ''); },
+  onStatus: (s, d) => { logger.info(`[WS] ${s}`, d || ''); },
 });
 
 const restCollector = new FuturesRestCollector(symbols);
@@ -115,14 +152,17 @@ const llmScheduler = new LLMScheduler(newsCollector, symbols, {
   fearGreedCollector,
   stablecoinCollector,
   ringBuffer,
+  unifiedIntervalMin: 2,
 });
 const eventMonitor = new EventMonitor(newsCollector, ringBuffer, { symbols });
-const ruleEngine = new RuleEngine(ringBuffer, macroCollector, symbols);
+const ruleEngine = new RuleEngine(ringBuffer, macroCollector, symbols, { economicCalendar });
 
 const executor = new Executor(ringBuffer, {
   testnetMode: config.binance.testnet,
   apiKey: config.binance.apiKey,
   apiSecret: config.binance.apiSecret,
+  macroCollector,
+  symbols: config.tradingSymbols,
   ...config.trading,
 });
 
@@ -139,6 +179,7 @@ const symbolRotator = new SymbolRotator(config, {
     llmScheduler.symbols = allSymbols;
     eventMonitor.symbols = allSymbols;
     ruleEngine.symbols = allSymbols;
+    executor.symbols = allSymbols; // [M-7] _recoverPositions/_syncPositions 설정 심볼 동기화
   },
 });
 
@@ -150,10 +191,13 @@ llmScheduler.planCache = ruleEngine.planCache; // 플랜 연장 시 인메모리
 
 // ── 시작 ──
 async function start() {
-  console.log('=== COIN v2 — 5-Zone Architecture ===');
-  console.log(`Symbols: Core ${config.tradingSymbolsCore.length} + Flex auto-rotation`);
+  logger.info('=== COIN v2 — 5-Zone Architecture ===');
+  logger.info(`Symbols: Core ${config.tradingSymbolsCore.length} + Flex auto-rotation`);
 
   await initDb();
+
+  // 신규 심볼 kline 백필 (Binance REST → DB, 데이터 부족 시에만 실행)
+  await bootstrapKlines(symbols);
 
   startLLMServer();
 
@@ -169,6 +213,7 @@ async function start() {
   economicCalendar.start();
   fearGreedCollector.start();
   stablecoinCollector.start();
+  coinbasePremium.start();
   // symbolRotator.start();  // 잡코인 휩쏘 문제로 로테이션 비활성화 (메이저/준메이저 10개만 사용)
   global._symbolRotator = symbolRotator;
 
@@ -180,7 +225,7 @@ async function start() {
   eventMonitor.start();
 
   // Z3
-  ruleEngine.start();
+  await ruleEngine.start();
   executor.start();
 
   // Z4
@@ -206,20 +251,20 @@ async function start() {
       return p ? `${s}=$${p.toFixed(2)}` : `${s}=--`;
     }).join(' | ');
 
-    console.log(
+    logger.info(
       `[STATS] ${prices} | plans=${re.activePlans} signals=${re.signalCount} | ` +
       `entries=${ex.entries} exits=${ex.exits} bal=$${ex.balance.toFixed(2)}`
     );
   }, 30000);
 
-  console.log('[COIN] All 5 zones started');
+  logger.info('[COIN] All 5 zones started');
 }
 
 let shuttingDown = false;
 async function shutdown(reason = 'SIGINT') {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`\n[COIN] Shutting down (reason=${reason})...`);
+  logger.info(`\n[COIN] Shutting down (reason=${reason})...`);
 
   // 데이터 수집 중단 (새 시그널 차단)
   ruleEngine.stop();
@@ -231,11 +276,11 @@ async function shutdown(reason = 'SIGINT') {
   try {
     const openCount = executor.activePositions?.size || 0;
     if (openCount > 0) {
-      console.log(`[COIN] Closing ${openCount} open positions before shutdown...`);
+      logger.info(`[COIN] Closing ${openCount} open positions before shutdown...`);
       await executor.closeAllPositions(`SHUTDOWN_${reason}`);
     }
   } catch (err) {
-    console.error('[COIN] Position cleanup error:', err.message);
+    logger.error('[COIN] Position cleanup error:', err.message);
   }
 
   // Python LLM 프로세스 종료
@@ -246,11 +291,11 @@ async function shutdown(reason = 'SIGINT') {
 
   // 나머지 컴포넌트 중지
   tiingoCryptoWs.stop();
-  onchainCollector.stop();
   coinglassCollector.stop();
   economicCalendar.stop();
   fearGreedCollector.stop();
   stablecoinCollector.stop();
+  coinbasePremium.stop();
   restCollector.stop();
   rawWriter.stop();
   macroCollector.stop();
@@ -259,9 +304,10 @@ async function shutdown(reason = 'SIGINT') {
   executor.stop();
   perfTracker.stop();
   tradeRecorder.stop();
+  hotReloader.stop();
   await closeDb();
 
-  console.log('[COIN] Shutdown complete — all ports released');
+  logger.info('[COIN] Shutdown complete — all ports released');
   process.exit(0);
 }
 
@@ -270,11 +316,11 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGHUP',  () => shutdown('SIGHUP'));
 process.on('uncaughtException', async (err) => {
-  console.error('[COIN] uncaughtException:', err);
+  logger.error('[COIN] uncaughtException:', err);
   await shutdown('UNCAUGHT_EXCEPTION').catch(() => process.exit(1));
 });
 process.on('unhandledRejection', async (reason) => {
-  console.error('[COIN] unhandledRejection:', reason);
+  logger.error('[COIN] unhandledRejection:', reason);
   await shutdown('UNHANDLED_REJECTION').catch(() => process.exit(1));
 });
 process.on('exit', () => {
@@ -282,6 +328,6 @@ process.on('exit', () => {
 });
 
 start().catch(err => {
-  console.error('[COIN] Fatal:', err);
+  logger.error('[COIN] Fatal:', err);
   process.exit(1);
 });

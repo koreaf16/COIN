@@ -1,8 +1,20 @@
 /**
- * 타임존 유틸리티
+ * @module 시간 유틸리티
+ * @description 타임존 변환(UTC, ET) 및 날짜 포맷팅 기능을 제공한다.
  *
- * 정책: DB 저장은 UTC, UI 표시는 ET
- * Windows에서 process.env.TZ가 안 먹히므로 명시적 UTC 변환 사용
+ * ┌──────────┐     ┌──────────┐     ┌──────────┐
+ * │ System   │ ──→ │ Time     │ ──→ │ Oracle/  │
+ * │ Time     │     │ Utils    │     │ Dashboard│
+ * └──────────┘     └──────────┘     └──────────┘
+ *
+ * @zone shared
+ * @dependencies none
+ */
+
+/**
+ * 타임존 정책:
+ *   - DB 저장은 UTC, UI 표시는 ET
+ *   - Windows에서 process.env.TZ가 안 먹히므로 명시적 UTC 변환 사용
  */
 
 /** UTC 기준 현재 Date 객체 (Oracle INSERT용) */

@@ -1,7 +1,16 @@
 /**
- * COIN v2 Config — 5-Zone Architecture
+ * @module 설정 관리자
+ * @description .env.local 파일에서 환경 변수를 로드하고 시스템 전역 설정을 관리한다.
+ *
+ * ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+ * │ .env.local   │ ──→ │ Config       │ ──→ │ All Modules  │
+ * │ (Environment)│     │ Manager      │     │ (System-wide)│
+ * └──────────────┘     └──────────────┘     └──────────────┘
+ *
+ * @zone shared
+ * @dependencies logger.js, fs, path, url
  */
-
+import { logger } from "./logger.js";
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -46,9 +55,9 @@ export const config = {
     const added = newFlex.filter(s => !prev.includes(s));
     const removed = prev.filter(s => !newFlex.includes(s));
     if (added.length || removed.length) {
-      console.log(`[Config] Flex 심볼 변경: +${added.length} -${removed.length} → 총 ${this.tradingSymbols.length}개`);
-      if (added.length) console.log(`[Config]   추가: ${added.join(', ')}`);
-      if (removed.length) console.log(`[Config]   제거: ${removed.join(', ')}`);
+      logger.info(`[Config] Flex 심볼 변경: +${added.length} -${removed.length} → 총 ${this.tradingSymbols.length}개`);
+      if (added.length) logger.info(`[Config]   추가: ${added.join(', ')}`);
+      if (removed.length) logger.info(`[Config]   제거: ${removed.join(', ')}`);
     }
     return { added, removed, total: this.tradingSymbols };
   },
@@ -57,14 +66,17 @@ export const config = {
   trading: {
     exchange: 'BINANCE_FUTURES',
     marginMode: 'ISOLATED',
-    maxLeverage: parseInt(env.MAX_LEVERAGE || '2'),          // 스윙: 레버리지 하향
+    maxLeverage: parseInt(env.MAX_LEVERAGE || '2'),
     feeRateTaker: parseFloat(env.FEE_RATE_TAKER || '0.04'),
     feeRoundtrip: parseFloat(env.FEE_ROUNDTRIP || '0.08'),
     maxPositionPct: parseFloat(env.MAX_POSITION_PCT || '10'),
-    safetyStopPct: parseFloat(env.SAFETY_STOP_PCT || '4'),  // 스윙: 손절폭 4%
+    maxRiskPct: parseFloat(env.MAX_RISK_PCT || '1'),
+    safetyStopPct: parseFloat(env.SAFETY_STOP_PCT || '4'),
     maxSlippagePct: parseFloat(env.MAX_SLIPPAGE_PCT || '0.3'),  // 진입 전 호가창 슬리피지 한도
+    entryLimitTimeoutSec: parseFloat(env.ENTRY_LIMIT_TIMEOUT_SEC || '3'),
+    entryLimitFallbackPct: parseFloat(env.ENTRY_LIMIT_FALLBACK_PCT || '0.15'),
     maxDailyLossPct: parseFloat(env.MAX_DAILY_LOSS_PCT || '5'),
-    maxOpenTrades: parseInt(env.MAX_OPEN_TRADES || '5'),    // 스윙: 동시 5개
+    maxOpenTrades: parseInt(env.MAX_OPEN_TRADES || '5'),
     initialCapital: parseFloat(env.INITIAL_CAPITAL || '10000'),
     directions: ['LONG', 'SHORT'],
   },
@@ -88,11 +100,6 @@ export const config = {
   fred: {
     apiKey: env.FRED_API_KEY,
     seriesIds: (env.FRED_SERIES_IDS || '').split(',').filter(Boolean),
-  },
-
-  // CryptoQuant (온체인)
-  cryptoquant: {
-    apiKey: env.CRYPTOQUANT_API_KEY || '',
   },
 
   // Coinglass (청산맵)

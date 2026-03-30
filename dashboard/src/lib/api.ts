@@ -6,8 +6,27 @@ export async function fetchApi<T>(path: string): Promise<T> {
   return res.json();
 }
 
+export interface StructureSnapshot {
+  daily_bias?: string;
+  trend_bias_4h?: string;
+  trigger_bias_1h?: string;
+  btc_daily_bias?: string;
+}
+
+export interface StructureMonitor {
+  current?: StructureSnapshot;
+  plan?: {
+    higherTimeframe?: Record<string, unknown>;
+    trigger?: Record<string, unknown>;
+  };
+  hasHigherTimeframePlan?: boolean;
+  hasTriggerPlan?: boolean;
+  aligned?: boolean;
+  blockReason?: string | null;
+}
+
 export interface DashboardData {
-  symbols: { symbol: string; price: number; change24h: number }[];
+  symbols: { symbol: string; price: number; change24h: number; structure?: StructureMonitor }[];
   stats: { checkCount: number; signalCount: number; activePlans: number };
   execution: { signals: number; entries: number; exits: number; balance: number; mode: string; activePositions: number };
 }
@@ -29,6 +48,7 @@ export interface LivePosition {
   timeRemainingMin: number | null;
   confidence: number;
   entryTime: string;
+  structure?: StructureMonitor;
 }
 
 export interface ConditionDetail {
@@ -51,6 +71,7 @@ export interface PlanStatus {
   conditions: ConditionDetail[];
   conditionsMet: number;
   conditionsTotal: number;
+  structure?: StructureMonitor;
 }
 
 export interface Position {
@@ -64,5 +85,8 @@ export interface Position {
   exitReason?: string;
   pnlPct?: number;
   pnlAmount?: number;
+  feeAmount?: number;
   status: string;
+  notional?: number;
+  structure?: StructureMonitor;
 }

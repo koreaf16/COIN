@@ -1,36 +1,40 @@
 """
-Z2 LLM Supervisor Prompts — 시장 분석/시나리오/검증용 프롬프트 템플릿
-모든 프롬프트는 검증 가능한 수치 출력을 강제함
+@module Prompts
+@description LLM에 전달할 시스템 프롬프트 및 사용자 프롬프트 템플릿을 관리한다.
+             모든 프롬프트는 검증 가능한 수치 출력을 강제하며 한국어 응답을 포함한다.
+
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│ Market   │ ──→ │ Prompt   │ ──→ │ LLM      │
+│ Data     │     │ Builder  │     │ Client   │
+└──────────┘     └──────────┘     └──────────┘
+
+@dependencies json, typing
 """
 import json
+from typing import List, Dict, Optional, Any
 
-SYSTEM_PROMPT = """You are an expert crypto derivatives SWING trading analyst.
-You analyze market data across multiple timeframes (4h, Daily) and produce structured JSON outputs.
-Your goal is to identify high-conviction setups with holding periods of 4 to 48 hours.
+# ── 시스템 프롬프트 상수 ──
+
+SYSTEM_PROMPT = """Analyze crypto derivatives SWING trading data and produce structured JSON outputs.
+Focus on high-conviction setups for 4 to 48 hour holding periods based on 4h/Daily timeframes.
 
 RULES:
-1. Always include specific numerical values from the data in your reasoning
-2. Output ONLY valid JSON (no markdown, no explanation outside JSON)
-3. Include a "confidence" field (0.0-1.0) in every response
-4. If data is insufficient, set confidence below 0.5
-5. Never hallucinate numbers — only reference values provided in the input
+1. Always include specific numerical values from the data in your reasoning.
+2. Output ONLY valid JSON (no markdown, no explanation outside JSON).
+3. Include a "confidence" field (0.0-1.0) in every response.
+4. If data is insufficient, set confidence below 0.5.
+5. Never hallucinate numbers — only reference values provided in the input.
 6. CRITICAL: Write ALL "reasoning", "summary", "explanation" fields in Korean (한국어).
-   Include specific data values in Korean text. Example: "4시간봉 ATR 기준 목표가 설정, 펀딩비 -0.0005로 숏 과밀, OI 2.3% 감소로 롱 매수 압력 확인"
-   NEVER write reasoning in English.
-7. SWING RULES: Prioritize 4h and Daily trend structure over short-term noise.
-   Set time_stop_min between 240 (4h) and 2880 (48h). Avoid scalping setups (time_stop < 60min)."""
+   Include specific data values in Korean text.
+7. SWING RULES: Prioritize 4h and Daily trend structure. Set time_stop_min between 240 (4h) and 2880 (48h)."""
 
-
-# ── 분석 전용 시스템 프롬프트 (DeepSeek/Qwen 공용) ──
-
-SENTIMENT_SYSTEM = """You are an expert crypto news sentiment analyst.
-You analyze news headlines and produce structured JSON outputs.
+SENTIMENT_SYSTEM = """Analyze news headlines and produce structured JSON.
+Output ONLY valid JSON. No explanations outside JSON.
 
 RULES:
-1. Output ONLY valid JSON (no markdown, no explanation outside JSON)
-2. Include a "confidence" field (0.0-1.0) in every response
-3. Never hallucinate — only reference what is provided in the input
-4. If data is insufficient, set confidence below 0.5
+1. Include "confidence" field (0.0-1.0).
+2. Never hallucinate — reference input only.
+3. If data is insufficient, set confidence below 0.5.
 
 Output JSON format:
 {
@@ -41,18 +45,15 @@ Output JSON format:
   "confidence": "<float 0-1>"
 }"""
 
-VALIDATE_SYSTEM = """You are an expert crypto position validator.
-You check if the fundamental market premise for an open position is still valid.
+VALIDATE_SYSTEM = """Validate crypto position premise based on current market metrics.
+Output ONLY valid JSON. No explanations outside JSON.
 
 RULES:
-1. Output ONLY valid JSON (no markdown, no explanation outside JSON)
-2. Include a "confidence" field (0.0-1.0) in every response
-3. Never hallucinate numbers — only reference values provided in the input
-4. Write ALL "reasoning", "explanation" fields in Korean (한국어).
-5. Ignore exact 'price' entry conditions. Price fluctuations are managed by Stop-Loss and Take-Profit.
-6. Focus ONLY on fundamental metrics (CVD, OI, Funding Rate, Macro, Volume) mentioned in the reasoning.
-7. If the fundamental bearish/bullish premise is still intact, recommend HOLD.
-8. Only recommend FULL_EXIT if the core thesis has fundamentally reversed.
+1. Include "confidence" field (0.0-1.0).
+2. Never hallucinate numbers.
+3. Write ALL "reasoning", "explanation" fields in Korean (한국어).
+4. Ignore exact 'price' entry conditions. Focus on CVD, OI, Funding Rate, Macro, Volume.
+5. Recommend HOLD if thesis is intact, FULL_EXIT only if thesis reversed.
 
 Output JSON format:
 {
@@ -66,20 +67,67 @@ Output JSON format:
   "confidence": "<0-1>"
 }"""
 
+UNIFIED_PLAN_SYSTEM = """Crypto SWING trading (4-48h hold). Output ONLY valid JSON, no hallucinations.
 
-def build_sentiment_prompt(news_items: list[dict]) -> str:
-    news_text = "\n".join([
-        f"- [{n.get('source','?')}] {n.get('title','')}"
-        for n in news_items[:20]
-    ])
-    return f"""NEWS:
-{news_text}"""
+ALLOWED CONDITION FIELDS (exact names only):
+price, funding_rate, predicted_funding, oi_change_pct, open_interest, long_ratio, short_ratio, liq_long_24h, liq_short_24h, cvd_direction, macro_regime, volume_surge, price_dir_1h, oi_dir_1h, volatility_acceleration, daily_bias, trend_bias_4h, trigger_bias_1h, btc_daily_bias, ema_gap_4h, ema_gap_1d, ema_fast_above_slow_4h, ema_fast_above_slow_1d, pullback_atr_ratio, support_distance_pct, resistance_distance_pct, range_position_20, donchian_break_20, relative_strength_btc_12h, pullback_long_setup, pullback_short_setup, breakout_long_setup, breakout_short_setup, retest_support_ready, retest_resistance_ready.
 
+RULES:
+1. Direction: LONG/SHORT/SKIP. SKIP only if data missing or contradictory.
+2. cvd_direction: -1.0~1.0. volume_surge: ratio(1.0=normal). price_dir_1h/oi_dir_1h: "UP"/"DOWN"/"FLAT" with "==".
+3. target_price: 1.5~3x 4h ATR, max 10% from entry. R:R>=2.0. stop_price>=1.0% from entry.
+4. time_stop_min: 240~2880.
+5. TREND MATURITY: c_bear>=4 & c_drop>1% → SKIP SHORT. c_bull>=4 & c_rise>1% → SKIP LONG.
+6. BTC ALIGN(non-BTC): btc_mom>+1% → no SHORT. btc_mom<-1% → no LONG.
+7. RSI: rsi14<30 → SKIP SHORT. rsi14>70 → SKIP LONG.
+8. STRUCTURE HIERARCHY: Align plans with daily_bias -> trend_bias_4h -> trigger_bias_1h. entry_conditions MUST include at least 1 higher timeframe field (daily_bias, trend_bias_4h, btc_daily_bias) AND at least 1 trigger field (trigger_bias_1h, pullback_*, breakout_*, retest_*, support/resistance structure fields).
+9. stop_conditions MUST NOT be empty. Include at least 1 condition that invalidates the thesis (e.g. funding_rate reversal, oi_change_pct spike, cvd_direction flip). These are logical exit triggers evaluated every 5s while in position.
 
-def build_briefing_prompt(snapshot: dict, sentiment: dict | None, similar_states: dict | None) -> str:
+CONFIDENCE per plan (0.0-1.0): 0.85-0.95=3+ signals aligned, 0.70-0.84=2 signals, 0.55-0.69=weak, <0.55=SKIP.
+
+{"plans":[{"symbol":"SYM","direction":"LONG|SHORT|SKIP","confidence":0.0,"entry_conditions":{"daily_bias":{"op":"==","value":"BULLISH"},"trend_bias_4h":{"op":"==","value":"BULLISH"},"trigger_bias_1h":{"op":"==","value":"BULLISH"},"breakout_long_setup":{"op":">=","value":1},"price":{"op":">","value":0}},"target_price":0,"stop_price":0,"stop_conditions":{"cvd_direction":{"op":">","value":0.5}},"time_stop_min":0,"reasoning":"max 150 chars"}]}"""
+
+# ── 프롬프트 빌더 함수 ──
+
+def build_sentiment_prompt(news_items: List[Dict[str, Any]]) -> str:
+    """뉴스 항목들을 기반으로 감정 분석 프롬프트를 생성한다."""
+    lines = []
+    for n in news_items[:20]:
+        title = n.get('title', '').strip()
+        source = n.get('source', '?')
+        category = n.get('category', '')
+        content = n.get('content', '').strip()
+
+        entry = f"[{source}]"
+        if category:
+            entry += f"[{category}]"
+        entry += f" {title}"
+        if content:
+            entry += f"\n  → {content[:150]}"
+        lines.append(entry)
+
+    news_text = "\n".join(lines)
+    return f"""Analyze the following {len(news_items[:20])} crypto/macro news articles and determine the overall market sentiment.
+
+NEWS:
+{news_text}
+
+Classify the aggregate sentiment from the articles above.
+Consider: market-moving events, institutional signals, regulatory news, macro factors.
+Return exactly one JSON object with keys sentiment, intensity, key_topic, source_count, confidence.
+Do not add any other text."""
+
+def build_briefing_prompt(
+    snapshot: Dict[str, Any],
+    sentiment: Optional[Dict[str, Any]],
+    similar_states: Optional[Dict[str, Any]],
+    recent_events: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """시장 스냅샷과 감정 지표를 결합하여 브리핑 프롬프트를 생성한다."""
     data = json.dumps(snapshot, indent=2, default=str)
     sent_text = json.dumps(sentiment, indent=2) if sentiment else "N/A"
     similar_text = json.dumps(similar_states, indent=2) if similar_states else "N/A"
+    events_text = json.dumps(recent_events, indent=2, default=str) if recent_events else "None"
 
     return f"""Analyze the current market state and produce a comprehensive briefing.
 
@@ -89,8 +137,13 @@ MARKET DATA:
 RECENT SENTIMENT:
 {sent_text}
 
+RECENT INTERPRETED EVENTS:
+{events_text}
+
 SIMILAR HISTORICAL STATES:
 {similar_text}
+
+Use RECENT INTERPRETED EVENTS to adjust direction_bias, bias_strength, and risk_factors.
 
 Output JSON:
 {{
@@ -106,54 +159,56 @@ Output JSON:
   "confidence": <float 0-1>
 }}"""
 
+def build_scenario_prompt(
+    snapshot: Dict[str, Any], 
+    briefing: Dict[str, Any], 
+    similar_states: Optional[Dict[str, Any]],
+    event_calendar: Optional[List[Any]] = None,
+    fear_greed: Optional[Dict[str, Any]] = None,
+    stablecoin: Optional[Dict[str, Any]] = None,
+    recent_losses: Optional[List[Any]] = None,
+    recent_events: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """시나리오 생성 프롬프트를 빌드한다. (50줄 초과 방지를 위해 데이터 직렬화 분리)"""
+    data_ctx = {
+        "market": snapshot,
+        "briefing": briefing,
+        "historical": similar_states or "N/A",
+        "events": event_calendar or "None",
+        "recent_events": recent_events or "None",
+        "fear_greed": fear_greed or "N/A",
+        "stablecoin": stablecoin or "N/A",
+        "recent_losses": recent_losses or "None"
+    }
+    
+    # 템플릿 부분만 반환하여 함수 길이 유지
+    return _get_scenario_template(data_ctx)
 
-def build_scenario_prompt(snapshot: dict, briefing: dict, similar_states: dict | None,
-                          event_calendar: list | None = None,
-                          fear_greed: dict | None = None,
-                          stablecoin: dict | None = None,
-                          recent_losses: list | None = None) -> str:
-    data = json.dumps(snapshot, indent=2, default=str)
-    brief = json.dumps(briefing, indent=2)
-    similar_text = json.dumps(similar_states, indent=2) if similar_states else "N/A"
-    cal_text = json.dumps(event_calendar, indent=2) if event_calendar else "None"
-    fg_text = json.dumps(fear_greed, indent=2) if fear_greed else "N/A"
-    sc_text = json.dumps(stablecoin, indent=2) if stablecoin else "N/A"
-    loss_text = json.dumps(recent_losses, indent=2) if recent_losses else "None"
-
+def _get_scenario_template(ctx: Dict[str, Any]) -> str:
+    """시나리오 생성을 위한 상세 템플릿과 데이터를 결합한다."""
     return f"""Generate 3 SWING trading scenarios with machine-readable entry conditions.
 Target holding period: 4 to 48 hours. Use 4h/Daily structure for key levels.
 
-MARKET: {data}
-BRIEFING: {brief}
-HISTORICAL: {similar_text}
-EVENTS: {cal_text}
-FEAR_GREED: {fg_text}
-STABLECOIN_SUPPLY: {sc_text}
-RELEVANT_RECENT_LOSSES (RAG): {loss_text}
+MARKET: {json.dumps(ctx['market'], default=str)}
+BRIEFING: {json.dumps(ctx['briefing'], default=str)}
+HISTORICAL: {json.dumps(ctx['historical'], default=str)}
+EVENTS: {json.dumps(ctx['events'], default=str)}
+RECENT_INTERPRETED_EVENTS: {json.dumps(ctx['recent_events'], default=str)}
+FEAR_GREED: {json.dumps(ctx['fear_greed'], default=str)}
+STABLECOIN_SUPPLY: {json.dumps(ctx['stablecoin'], default=str)}
+RELEVANT_RECENT_LOSSES (RAG): {json.dumps(ctx['recent_losses'], default=str)}
 
 Rules for scenarios:
-1. Review RELEVANT_RECENT_LOSSES. Do NOT suggest a plan if current market metrics match a pattern that previously led to a loss (e.g., catching a falling knife when Price DOWN & OI UP).
-2. If current metrics (volatility_acceleration, funding_rate, etc.) look like a trap, increase the confidence threshold for entry.
-3. SWING RULE: Use 4h ATR for target_price and stop_price calculation, not 1m ATR.
-4. SWING RULE: time_stop_min should be between 240 (4h) and 2880 (48h). NEVER set below 120.
-
-Operators: "<", ">", "<=", ">=", "==", "in"
-Fields and data types (use ONLY numeric comparisons for numeric fields):
-- price: float (USD, e.g. 68000.0) — use >, <, >=, <=
-- funding_rate: float (e.g. 0.0001 = 0.01%) — use >, <, >=, <=
-- oi_change_pct: float (e.g. 0.02 = 2% increase) — use >, <, >=, <=
-- cvd_direction: float (-1.0 = strong sell pressure, 0 = neutral, +1.0 = strong buy pressure) — use >, <, >=, <=
-- macro_regime: string enum ("risk_on", "risk_off", "neutral") — use "in" or "=="
-- volume_surge: float (ratio vs 5min avg, e.g. 2.0 = 2x normal volume) — use >, <, >=, <=
-- volatility_acceleration: float (current ATR / recent 10-bar avg ATR) — use >, <, >=, <=
-IMPORTANT: Never use string values like "positive"/"negative" or booleans for numeric fields.
-
-IMPORTANT: Every scenario MUST include both target_price AND stop_price.
-- target_price: realistic take-profit level based on 4h support/resistance and 4h ATR
-- stop_price: invalidation level where the thesis breaks (key S/R level beyond entry)
-  - For LONG: stop_price < entry price (below nearest 4h support)
-  - For SHORT: stop_price > entry price (above nearest 4h resistance)
-- Risk:Reward ratio (distance to target / distance to stop) MUST be >= 2.0 for swing trades
+1. Review RELEVANT_RECENT_LOSSES. Do NOT suggest a plan if current market metrics match a pattern that previously led to a loss.
+2. Review RECENT_INTERPRETED_EVENTS. If a recent high-urgency or high-confidence event conflicts with the setup, lower probability sharply or do not suggest that plan.
+3. If current metrics look like a trap, increase the confidence threshold.
+4. SWING RULE: Use 4h ATR for targets, time_stop_min between 240-2880.
+5. TREND MATURITY: If c_bear >= 4 and drop > 1%, do NOT SHORT. If c_bull >= 4 and rise > 1%, do NOT LONG.
+6. BTC ALIGNMENT: Check btc_mom. Do NOT counter BTC bounce/drop.
+7. RSI EXTREMES: rsi14 < 30 no SHORT, rsi14 > 70 no LONG.
+8. STOP DISTANCE: stop_price >= 1.0% from entry. R:R >= 2.0.
+9. STOP CONDITIONS: MUST NOT be empty. Include logic like funding_rate reversal or cvd_direction flip.
+10. IMPORTANT: Use actual market field names as JSON keys. Never use a literal "field" key. Example: {"price":{"op":"<","value":0}}.
 
 Output JSON:
 {{
@@ -163,82 +218,30 @@ Output JSON:
       "description": "<한국어 시나리오 설명>",
       "probability": <0-1>,
       "direction": "<LONG|SHORT>",
-      "entry_conditions": {{
-        "funding_rate": {{"op": "<", "value": -0.0005}},
-        "macro_regime": {{"op": "in", "value": ["risk_on", "neutral"]}}
-      }},
-      "target_price": <number - required, based on 4h ATR or key resistance/support>,
-      "stop_price": <number - required, invalidation level based on 4h structure>,
-      "stop_conditions": {{"funding_rate": {{"op": ">", "value": 0.001}}}},
-      "time_stop_min": <int, MUST be between 240 and 2880>,
-      "reasoning": "<한국어로 구체적 수치와 함께 근거 설명. 반드시 4시간봉 기준 목표가/손절가 근거 포함>"
+      "funding_rate": <actual from data>,
+      "open_interest": <actual from data>,
+      "entry_conditions": {{"price": {{"op": "<", "value": 0}}}},
+      "target_price": <number>,
+      "stop_price": <number>,
+      "stop_conditions": {{"cvd_direction": {{"op": ">", "value": 0}}}},
+      "time_stop_min": <int>,
+      "reasoning": "<한국어로 구체적 수치와 함께 근거 설명>"
     }}
   ],
   "recommended_scenario": "<id>",
   "confidence": <0-1>
 }}"""
 
-
-# ── DeepSeek 전용 시스템 프롬프트 (프리픽스 캐싱 최적화) ──
-# 정적 규칙/포맷을 시스템 프롬프트에 포함 → 매 호출 100% 캐시 히트
-DEEPSEEK_UNIFIED_PLAN_SYSTEM = """You are an expert crypto derivatives SWING trading analyst.
-You analyze market data and produce structured JSON outputs.
-Target holding period: 4 to 48 hours. Prioritize 4h/Daily trend structure.
-
-RULES:
-1. Output ONLY valid JSON (no markdown, no explanation outside JSON)
-2. Include a "confidence" field (0.0-1.0) in every response
-3. If data is insufficient, set confidence below 0.5
-4. Never hallucinate numbers — only reference values provided in the input
-
-TASK: Determine the better direction (LONG or SHORT) for the symbol and set entry conditions.
-
-PLAN RULES:
-1. Always output LONG or SHORT. Use SKIP only when data is completely missing or contradictory signals cancel out.
-2. entry_conditions must require a trigger NOT already satisfied at current market state.
-   - Bad: price <= current_price (already true — triggers immediately)
-   - Good: cvd_direction > 0.5, oi_change_pct > 0.01, volume_surge > 1.5
-3. target_price must be realistic based on 4h ATR — calculate distance as 1.5~3x the 4h ATR
-4. Risk:Reward (target distance / stop distance) MUST be >= 2.0 for swing trades
-5. stop_conditions: logical invalidation rules (e.g., funding_rate or cvd_direction reverses)
-6. time_stop_min: MUST be between 240 (4h minimum) and 2880 (48h maximum). NEVER set below 120.
-
-Operators: "<", ">", "<=", ">=", "==", "in"
-Fields: price (float), funding_rate (float), oi_change_pct (float), cvd_direction (float -1~+1), macro_regime ("risk_on"|"risk_off"|"neutral"), volume_surge (float ratio, see v_surge in data), volatility_acceleration (float, current 4h ATR / 10-bar avg 4h ATR; >1.2 = expanding, <0.8 = contracting, see vol_acc in data)
-4h Swing Data: t4h (float -1~+1, 4h EMA trend strength), t4h_b ("bullish"|"bearish"|"neutral", 4h bias), atr4h (float, 4h ATR as % of price), chg12h (float, 12h price change %). USE these to determine swing direction and realistic target distances.
-
-Output JSON:
-{
-  "plans": [
-    {
-      "symbol": "<SYMBOL>",
-      "direction": "<LONG|SHORT|SKIP>",
-      "entry_conditions": {
-        "volume_surge": {"op": ">", "value": 1.5},
-        "cvd_direction": {"op": ">", "value": 0.3}
-      },
-      "target_price": "<number - REQUIRED for LONG/SHORT, based on 4h ATR or key S/R>",
-      "stop_price": "<number - REQUIRED for LONG/SHORT, based on 4h structure>",
-      "stop_conditions": {
-        "cvd_direction": {"op": "<", "value": -0.3}
-      },
-      "time_stop_min": "<int, between 240 and 2880>",
-      "reasoning": "<English, max 150 chars: key 4h/Daily signal + target/stop basis>"
-    }
-  ],
-  "confidence": "<0-1>"
-}"""
-
-
-def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
-                              event_calendar: list | None = None,
-                              fear_greed: dict | None = None,
-                              stablecoin: dict | None = None,
-                              recent_losses: dict | None = None) -> str:
-    """유저 메시지 = 동적 데이터만 (정적 규칙은 시스템 프롬프트에 포함)
-    [최적화] 공통 데이터(MACRO/EVENTS/...)를 앞에 배치 → DeepSeek 프리픽스 캐시 히트 극대화
-    [최적화] indent 제거, compact JSON → 토큰 절감
-    """
+def build_unified_plan_prompt(
+    all_snapshots: Dict[str, Any], 
+    macro: Dict[str, Any],
+    event_calendar: Optional[List[Any]] = None,
+    fear_greed: Optional[Dict[str, Any]] = None,
+    stablecoin: Optional[Dict[str, Any]] = None,
+    recent_losses: Optional[Dict[str, Any]] = None,
+    recent_events: Optional[Dict[str, Any]] = None,
+) -> str:
+    """동적 데이터를 압축하여 통합 플랜 프롬프트를 생성한다."""
     _compact = lambda obj: json.dumps(obj, separators=(',', ':'), default=str)
 
     macro_text = _compact(macro) if macro else "N/A"
@@ -247,11 +250,13 @@ def build_unified_plan_prompt(all_snapshots: dict, macro: dict,
     sc_text = _compact(stablecoin) if stablecoin else "N/A"
     symbols_text = _compact(all_snapshots)
     loss_text = _compact(recent_losses) if recent_losses else "None"
+    event_text = _compact(recent_events) if recent_events else "None"
 
     return f"""MACRO: {macro_text}
 EVENTS_24H: {cal_text}
 FEAR_GREED: {fg_text}
 STABLECOIN: {sc_text}
+RECENT_INTERPRETED_EVENTS: {event_text}
 
 SYMBOL DATA:
 {symbols_text}
@@ -259,11 +264,86 @@ SYMBOL DATA:
 RECENT_LOSSES:
 {loss_text}
 
-CRITICAL: Analyze recent losses. If current market speed (volatility_acceleration) or OI-Price patterns match those losses, set higher confidence bars or skip entry."""
+CRITICAL: Analyze recent losses. If current market speed or OI-Price patterns match those losses, set higher confidence bars."""
 
 
+_LEGACY_UNIFIED_PLAN_SELECTOR_SYSTEM = """You are a selector, not a creator.
+Choose only from the pre-generated candidate plans below.
+Do NOT invent new symbols, directions, conditions, targets, stops, or time stops.
+Output ONLY valid JSON.
 
-def build_event_interpret_prompt(event_text: str, snapshot: dict) -> str:
+Selection rules:
+1. Select exactly 1 candidate overall, or none if nothing fits.
+2. Prefer the candidate with the best alignment to daily_bias -> trend_bias_4h -> trigger_bias_1h.
+3. Reject candidates that conflict with BTC alignment, RSI extremes, or structure hierarchy.
+4. Reject candidates that conflict with RECENT_INTERPRETED_EVENTS, especially urgent/high-confidence negative or positive event direction.
+5. Confidence reflects selection quality, not market prediction.
+
+Output JSON format:
+{
+  "selected_id": "candidate_id_1",
+  "confidence": 0.0,
+  "reasoning": "짧은 한국어 설명"
+}"""
+
+
+UNIFIED_PLAN_SELECTOR_SYSTEM = """You are a selector, not a creator.
+Choose only from the pre-generated candidate plans below.
+Do NOT invent new symbols, directions, conditions, targets, stops, or time stops.
+Output ONLY one minified JSON object.
+Do not include analysis, reasoning, markdown, code fences, or extra text.
+
+Selection rules:
+1. Select exactly 1 candidate overall, or none if nothing fits.
+2. Prefer the candidate with the best alignment to daily_bias -> trend_bias_4h -> trigger_bias_1h.
+3. Reject candidates that conflict with BTC alignment, RSI extremes, or structure hierarchy.
+4. Reject candidates that conflict with RECENT_INTERPRETED_EVENTS, especially urgent/high-confidence negative or positive event direction.
+
+Output JSON format:
+{
+  "selected_id": "candidate_id_1"
+}"""
+
+
+def build_unified_plan_selector_prompt(
+    candidate_plans: List[Dict[str, Any]],
+    macro: Dict[str, Any],
+    event_calendar: Optional[List[Any]] = None,
+    fear_greed: Optional[Dict[str, Any]] = None,
+    stablecoin: Optional[Dict[str, Any]] = None,
+    recent_losses: Optional[Dict[str, Any]] = None,
+    recent_events: Optional[Dict[str, Any]] = None,
+) -> str:
+    """코드가 만든 후보들 중에서 LLM이 고르게 하는 선택 프롬프트를 만든다."""
+    _compact = lambda obj: json.dumps(obj, separators=(',', ':'), default=str)
+
+    macro_text = _compact(macro) if macro else "N/A"
+    cal_text = _compact(event_calendar) if event_calendar else "None"
+    fg_text = _compact(fear_greed) if fear_greed else "N/A"
+    sc_text = _compact(stablecoin) if stablecoin else "N/A"
+    candidates_text = _compact(candidate_plans)
+    loss_text = _compact(recent_losses) if recent_losses else "None"
+    event_text = _compact(recent_events) if recent_events else "None"
+
+    return f"""MACRO: {macro_text}
+EVENTS_24H: {cal_text}
+FEAR_GREED: {fg_text}
+STABLECOIN: {sc_text}
+RECENT_INTERPRETED_EVENTS: {event_text}
+
+CANDIDATE_PLANS:
+{candidates_text}
+
+RECENT_LOSSES:
+{loss_text}
+
+Select only from the candidate_plans above. Do not create any new plan fields.
+If the market looks contradictory or low quality, return {{"selected_id": ""}}.
+Return exactly one minified JSON object and nothing else.
+"""
+
+def build_event_interpret_prompt(event_text: str, snapshot: Dict[str, Any]) -> str:
+    """급격한 이벤트를 해석하기 위한 프롬프트를 생성한다."""
     data = json.dumps(snapshot, indent=2, default=str)
     return f"""URGENT: Interpret this event for trading.
 
@@ -283,8 +363,8 @@ Output JSON:
   "confidence": <0-1>
 }}"""
 
-
-def build_validate_position_prompt(entry_reasoning: dict, current_snapshot: dict) -> str:
+def build_validate_position_prompt(entry_reasoning: Dict[str, Any], current_snapshot: Dict[str, Any]) -> str:
+    """포지션 진입 근거가 현재 시장 상황에서도 유효한지 검증하는 프롬프트를 생성한다."""
     entry = json.dumps(entry_reasoning, indent=2, default=str)
     current = json.dumps(current_snapshot, indent=2, default=str)
     return f"""ENTRY REASONING: {entry}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Candle1sChart } from '@/components/candle-1s-chart';
+import { StructureBadges } from '@/components/structure-badges';
 import { TradeReplayChart } from '@/components/trade-replay-chart';
 
 const fmtPrice = (price?: number) => {
@@ -23,10 +24,16 @@ const TASK_LABELS: Record<string, string> = {
 };
 
 const PROVIDER_BADGE: Record<string, { label: string; cls: string }> = {
-  local:  { label: 'Qwen',   cls: 'bg-blue-500/15 text-blue-400' },
-  claude: { label: 'Claude', cls: 'bg-orange-500/15 text-orange-400' },
-  gemini: { label: 'Gemini', cls: 'bg-green-500/15 text-green-400' },
+  deepseek: { label: 'DeepSeek', cls: 'bg-blue-500/15 text-blue-400' },
+  ollama:   { label: 'Qwen/Ollama', cls: 'bg-cyan-500/15 text-cyan-300' },
+  claude:   { label: 'Claude',   cls: 'bg-orange-500/15 text-orange-400' },
+  gemini:   { label: 'Gemini',   cls: 'bg-green-500/15 text-green-400' },
 };
+
+const ET_TIME_ZONE = 'America/New_York';
+
+const etDateString = (value: string | Date) =>
+  new Date(value).toLocaleDateString('en-CA', { timeZone: ET_TIME_ZONE });
 
 export default function TerminalPage() {
   const [regime, setRegime] = useState('NEUTRAL');
@@ -34,6 +41,7 @@ export default function TerminalPage() {
 
   const [livePositions, setLivePositions] = useState<any[]>([]);
   const [totalPnl, setTotalPnl] = useState(0);
+  const [closedPositions, setClosedPositions] = useState<any[]>([]);
   const [recentClosed, setRecentClosed] = useState<any[]>([]);
   const [planStatuses, setPlanStatuses] = useState<any[]>([]);
   const [replayTradeId, setReplayTradeId] = useState<number | null>(null);
@@ -80,6 +88,7 @@ export default function TerminalPage() {
       const res = await fetch('/api/coin/positions?status=CLOSED');
       if (!res.ok) return;
       const data = await res.json();
+      setClosedPositions(data || []);
       setRecentClosed((data || []).slice(0, 10));
     } catch {}
   }, []);
@@ -113,8 +122,8 @@ export default function TerminalPage() {
     return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearInterval(t4); clearInterval(t5); };
   }, [fetchDashboard, fetchLivePositions, fetchPortfolio, fetchPlanStatuses, fetchLlmActive]);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const todayClosed = recentClosed.filter(p => p.exit_time?.startsWith(todayStr));
+  const todayStr = etDateString(new Date());
+  const todayClosed = closedPositions.filter(p => p.exit_time && etDateString(p.exit_time) === todayStr);
   const realizedPnl = todayClosed.reduce((s, p) => s + (p.pnl_amount || 0), 0);
   const winCount = todayClosed.filter(p => (p.pnl_amount || 0) > 0).length;
   const winRate = todayClosed.length > 0 ? (winCount / todayClosed.length * 100) : 0;
@@ -191,16 +200,19 @@ export default function TerminalPage() {
                         })}
                         className={`border-b border-surface-container-high/10 hover:bg-surface transition-colors cursor-pointer ${isSelected ? 'bg-primary/5' : ''}`}>
                       <td className="p-3 font-bold text-primary">
-                        <span className="flex items-center gap-1">
-                          {p.symbol.replace('USDT', '')}
-                          <span className={`material-symbols-outlined text-sm transition-transform ${isSelected ? 'rotate-180' : ''}`}>expand_more</span>
-                        </span>
+                        <div className="space-y-1">
+                          <span className="flex items-center gap-1">
+                            {p.symbol.replace('USDT', '')}
+                            <span className={`material-symbols-outlined text-sm transition-transform ${isSelected ? 'rotate-180' : ''}`}>expand_more</span>
+                          </span>
+                          <StructureBadges structure={p.structure} compact />
+                        </div>
                       </td>
                       <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.direction === 'LONG' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'}`}>{p.direction}</span></td>
                       <td className="p-3 text-right font-mono">${fmtPrice(p.entryPrice)}</td>
                       <td className={`p-3 text-right font-mono font-bold ${pnlColor}`}>${fmtPrice(p.currentPrice)}</td>
                       <td className={`p-3 text-right font-bold ${pnlColor}`}>{p.unrealizedPnlPct >= 0 ? '+' : ''}{p.unrealizedPnlPct?.toFixed(2)}%</td>
-                      <td className={`p-3 text-right font-bold ${pnlColor}`}>{p.unrealizedPnlUsd >= 0 ? '+' : ''}${Math.abs(p.unrealizedPnlUsd)?.toFixed(2)}</td>
+                      <td className={`p-3 text-right font-bold ${pnlColor}`}>{p.unrealizedPnlUsd >= 0 ? '+' : '-'}${Math.abs(p.unrealizedPnlUsd)?.toFixed(2)}</td>
                       <td className="p-3 text-right font-mono text-xs text-outline">
                         {p.marginUsed != null
                           ? `$${p.marginUsed.toFixed(0)} ×${p.leverage}`
@@ -267,7 +279,7 @@ export default function TerminalPage() {
                       <td className="p-2.5"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${p.direction === 'LONG' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'}`}>{p.direction}</span></td>
                       <td className="p-2.5 text-right font-mono">${fmtPrice(p.entry_price)}</td>
                       <td className="p-2.5 text-right font-mono">{p.exit_price ? `$${fmtPrice(p.exit_price)}` : '--'}</td>
-                      <td className={`p-2.5 text-right font-bold ${pnl >= 0 ? 'text-success' : 'text-error'}`}>{pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(2)}</td>
+                      <td className={`p-2.5 text-right font-bold ${pnl >= 0 ? 'text-success' : 'text-error'}`}>{pnl >= 0 ? '+' : '-'}${Math.abs(pnl).toFixed(2)}</td>
                       <td className="p-2.5"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${p.exit_reason === 'TARGET' || p.exit_reason === 'ATR_TARGET' ? 'bg-success/10 text-success' : p.exit_reason === 'SAFETY_STOP' ? 'bg-error/10 text-error' : 'bg-surface-variant text-outline'}`}>{p.exit_reason || '--'}</span></td>
                     </tr>
                   );
@@ -302,7 +314,12 @@ export default function TerminalPage() {
                   {planStatuses.filter(p => p.timeRemainingMin > 0).map(plan => (
                     <tr key={plan.id} className="border-b border-surface-container-high/10 hover:bg-surface">
                       <td className="p-3 text-outline">#{plan.id}</td>
-                      <td className="p-3 font-bold">{plan.symbol?.replace('USDT','')}</td>
+                      <td className="p-3 font-bold">
+                        <div className="space-y-1">
+                          <div>{plan.symbol?.replace('USDT','')}</div>
+                          <StructureBadges structure={plan.structure} compact />
+                        </div>
+                      </td>
                       <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${plan.direction === 'LONG' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'}`}>{plan.direction}</span></td>
                       <td className="p-3 font-mono text-[10px]">{plan.currentPrice ? `$${Number(plan.currentPrice).toLocaleString()}` : '--'}</td>
                       <td className="p-3 font-mono text-[10px]">{plan.entryPrice ? `$${Number(plan.entryPrice).toLocaleString()}` : '--'}</td>

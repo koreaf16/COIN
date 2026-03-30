@@ -4,15 +4,18 @@ import { useEffect, useState } from 'react';
 
 interface ProviderStatus {
   available: boolean;
+  provider?: string;
   model?: string;
   path?: string;
   url?: string;
   has_key?: boolean;
+  framework?: string;
+  reasoning_effort?: string;
 }
 
 interface LLMStatus {
-  qwen?: ProviderStatus & { role?: string };
-  deepseek?: ProviderStatus & { role?: string };
+  local?: ProviderStatus & { role?: string };
+  local_llm?: ProviderStatus & { role?: string };
   claude_cli?: ProviderStatus & { role?: string };
   gemini_cli?: ProviderStatus & { role?: string };
   routing?: Record<string, string>;
@@ -56,7 +59,7 @@ export default function LLMTestPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: testPrompt, provider }),
-        signal: AbortSignal.timeout(180000), // 3분 타임아웃 (Gemini CLI가 느림)
+        signal: AbortSignal.timeout(310000), // 5분+ 타임아웃 (Gemini CLI가 느릴 수 있음)
       });
       if (res.ok) {
         const result = await res.json();
@@ -70,8 +73,7 @@ export default function LLMTestPage() {
   };
 
   const providers = [
-    { key: 'qwen', label: 'Qwen 3.5', icon: 'memory', desc: 'Ollama / Qwen3.5-27B', data: status.qwen },
-    { key: 'deepseek', label: 'DeepSeek', icon: 'cloud', desc: 'DeepSeek API', data: status.deepseek },
+    { key: 'local', label: 'Local Qwen', icon: 'memory', desc: 'Ollama / qwen3.5-27b-claude-4.6-opus-reasoning-distilled', data: status.local ?? status.local_llm },
     { key: 'claude_cli', label: 'Claude CLI', icon: 'terminal', desc: 'Claude Opus 4.6', data: status.claude_cli },
     { key: 'gemini_cli', label: 'Gemini CLI', icon: 'auto_awesome', desc: 'Gemini 3.1 Pro Preview', data: status.gemini_cli },
   ];
@@ -96,7 +98,7 @@ export default function LLMTestPage() {
       )}
 
       {/* 프로바이더 상태 카드 */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {providers.map(p => {
           const available = p.data?.available;
           const isRunning = testing === p.key;
@@ -113,6 +115,8 @@ export default function LLMTestPage() {
 
               <div className="text-[11px] space-y-1 text-on-surface-variant flex-1 mb-3">
                 {p.data?.model && <p>모델: <strong className="font-label text-on-surface">{p.data.model}</strong></p>}
+                {p.data?.framework && <p>프레임워크: <span className="text-on-surface">{p.data.framework}</span></p>}
+                {p.data?.reasoning_effort && <p>추론 강도: <span className="text-on-surface">{p.data.reasoning_effort}</span></p>}
                 {p.data?.role && <p>역할: <span className="text-on-surface">{p.data.role}</span></p>}
                 {p.data?.path && <p>경로: <code className="font-label bg-surface-container-low px-1 rounded text-[10px]">{p.data.path}</code></p>}
                 {p.data?.url && <p>URL: <code className="font-label bg-surface-container-low px-1 rounded text-[10px]">{p.data.url}</code></p>}
@@ -146,13 +150,13 @@ export default function LLMTestPage() {
                 <span className="text-xs font-label font-bold text-on-surface">{task}</span>
                 <span className="text-[10px] text-outline">→</span>
                 <span className={`text-xs font-label font-bold ${
-                  route === 'qwen' ? 'text-primary' : route === 'deepseek' ? 'text-tertiary' : 'text-success'
+                  route === 'local' ? 'text-primary' : 'text-success'
                 }`}>{route}</span>
               </div>
             ))}
           </div>
-          <p className="text-[10px] text-outline mt-2">cloud 라우팅: Claude CLI (Opus 4.6) → Gemini CLI (3.1 Pro) → Local 폴백</p>
-        </div>
+          <p className="text-[10px] text-outline mt-2">cloud 라우팅: Claude CLI (Opus 4.6) → Gemini CLI (3.1 Pro) → Local Qwen 폴백</p>
+      </div>
       )}
 
       {/* 테스트 프롬프트 */}
@@ -195,7 +199,7 @@ export default function LLMTestPage() {
                     <span className="text-[10px] font-label text-outline">{(r.latency_ms / 1000).toFixed(1)}초 | {r.tokens} 토큰</span>
                   )}
                 </div>
-                <div className="bg-surface-container-low p-3 rounded text-xs font-label leading-relaxed whitespace-pre-wrap max-h-40 overflow-y-auto">
+                <div className="bg-surface-container-low p-3 rounded text-xs font-label leading-relaxed whitespace-pre-wrap max-h-[60vh] overflow-y-auto">
                   {r.response || '(응답 없음)'}
                 </div>
               </div>

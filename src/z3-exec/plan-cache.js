@@ -1,15 +1,31 @@
 /**
- * Z3 Plan Cache — execution_plan 메모리 캐시
- * 1분마다 DB에서 ACTIVE 플랜 조회 → 메모리 캐시
- * 룰엔진이 매초 이 캐시를 읽어 조건 평가
+ * @module 플랜 캐시
+ * @description 실행 계획(Execution Plan)을 메모리에 캐싱하고 주기적으로 갱신한다.
+ *
+ * ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+ * │ Oracle DB    │ ───→ │ Plan         │ ───→ │ Rule Engine  │
+ * │ (Plans)      │      │ Cache        │      │              │
+ * └──────────────┘      └──────────────┘      └──────────────┘
+ *                              ↑
+ *                       ┌──────────────┐
+ *                       │ Scheduler    │
+ *                       │ (Z2 Intel)   │
+ *                       └──────────────┘
+ *
+ * @zone z3-exec
+ * @dependencies db.js, query-loader.js, logger.js
  */
 
 import oracledb from 'oracledb';
 import { getPool } from '../shared/db.js';
+import { logger } from '../shared/logger.js';
+import { loadQueries } from '../shared/query-loader.js';
+
+const queries = loadQueries('z3-exec/plan-cache');
 
 export class PlanCache {
   constructor(opts = {}) {
-    this.refreshIntervalMs = (opts.refreshIntervalSec || 60) * 1000; // 스윙: 1분 갱신 (단타 15초 불필요)
+    this.refreshIntervalMs = (opts.refreshIntervalSec || 60) * 1000;
     this.plans = new Map(); // symbol → [plan, plan, ...]
     this._timer = null;
     this.lastRefresh = 0;
@@ -35,8 +51,9 @@ export class PlanCache {
   get totalActive() {
     const now = Date.now();
     let count = 0;
-    for (const plans of this.plans.values())
+    for (const plans of this.plans.values()) {
       count += plans.filter(p => !p.validUntil || p.validUntil > now).length;
+    }
     return count;
   }
 
@@ -51,21 +68,19 @@ export class PlanCache {
 
   /** 플랜 상태 업데이트 (TRIGGERED) */
   async markTriggered(planId) {
-    const conn = await getPool().getConnection();
     try {
-      await conn.execute(
-        `UPDATE z2_execution_plan
-         SET status = 'TRIGGERED', triggered_at = SYSTIMESTAMP
-         WHERE id = :id AND status = 'ACTIVE'`,
-        { id: planId },
-        { autoCommit: true }
-      );
-    } finally {
-      await conn.close();
-    }
-    // 캐시에서도 제거
-    for (const [sym, plans] of this.plans) {
-      this.plans.set(sym, plans.filter(p => p.id !== planId));
+      const conn = await getPool().getConnection();
+      try {
+        await conn.execute(queries.markTriggered, { id: planId }, { autoCommit: true });
+      } finally {
+        await conn.close();
+      }
+      // 캐시에서도 제거
+      for (const [sym, plans] of this.plans) {
+        this.plans.set(sym, plans.filter(p => p.id !== planId));
+      }
+    } catch (err) {
+      logger.error(`[Z3-Cache] markTriggered error: ${err.message}`);
     }
   }
 
@@ -74,24 +89,12 @@ export class PlanCache {
       const conn = await getPool().getConnection();
       try {
         // 만료된 플랜 자동 EXPIRED 처리
-        await conn.execute(
-          `UPDATE z2_execution_plan SET status = 'EXPIRED'
-           WHERE status = 'ACTIVE' AND valid_until < CAST(SYSTIMESTAMP AS TIMESTAMP)`,
-          {}, { autoCommit: true }
-        );
+        await conn.execute(queries.expirePlans, {}, { autoCommit: true });
 
         // ACTIVE 플랜 조회
-        const result = await conn.execute(
-          `SELECT id, symbol, direction, entry_conditions, target_price, stop_price,
-                  stop_conditions, time_stop_min, confidence, reasoning, valid_until
-           FROM z2_execution_plan
-           WHERE status = 'ACTIVE' AND valid_until > CAST(SYSTIMESTAMP AS TIMESTAMP)
-           ORDER BY confidence DESC`,
-          {},
-          { outFormat: oracledb.OUT_FORMAT_OBJECT }
-        );
+        const result = await conn.execute(queries.getActivePlans, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
-        // Atomic swap: 새 Map을 완성한 후 한 번에 교체 (clear() 중 빈 캐시 방지)
+        // Atomic swap
         const newPlans = new Map();
         for (const row of (result.rows || [])) {
           const symbol = row.SYMBOL;
@@ -117,13 +120,12 @@ export class PlanCache {
           });
         }
         this.plans = newPlans;
-
         this.lastRefresh = Date.now();
       } finally {
         await conn.close();
       }
     } catch (err) {
-      console.error('[Z3-Cache] Refresh error:', err.message);
+      logger.error('[Z3-Cache] Refresh error:', err.message);
     }
   }
 }

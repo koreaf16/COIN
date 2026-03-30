@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { StructureBadges } from '@/components/structure-badges';
 
 interface Plan {
   id: number;
@@ -18,6 +19,7 @@ interface Plan {
   created_at: string;
   valid_until: string;
   triggered_at: string;
+  structure?: any;
 }
 
 const parseJson = (val: any) => {
@@ -88,6 +90,15 @@ export function PlanDetailCard({ planId }: { planId: number | null }) {
       </div>
 
       {/* 진입 조건 */}
+      {plan.structure && (
+        <div>
+          <h4 className="font-headline font-bold text-[10px] uppercase tracking-widest text-outline mb-1.5">구조 상태</h4>
+          <div className="bg-surface rounded p-3">
+            <StructureBadges structure={plan.structure} />
+          </div>
+        </div>
+      )}
+
       {entryConditions && (
         <div>
           <h4 className="font-headline font-bold text-[10px] uppercase tracking-widest text-outline mb-1.5">진입 조건</h4>
